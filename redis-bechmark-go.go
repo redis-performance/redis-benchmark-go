@@ -62,7 +62,6 @@ func getOSSClusterConn(addr string, opts []radix.DialOpt, clients uint64) *radix
 		)
 	}
 
-	//vanillaCluster.Client()
 	// this cluster will use the ClientFunc to create a pool to each node in the
 	// cluster.
 	poolFunc := func(network, addr string) (radix.Client, error) {
