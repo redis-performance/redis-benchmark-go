@@ -137,11 +137,11 @@ func main() {
 	// a WaitGroup for the goroutines to tell us they've stopped
 	wg := sync.WaitGroup{}
 	if !*loop {
-		fmt.Printf("Total clients: %d. Commands per client: %d Total commands: %d", *clients, samplesPerClient, *numberRequests)
+		fmt.Printf("Total clients: %d. Commands per client: %d Total commands: %d\n", *clients, samplesPerClient, *numberRequests)
 	} else {
-		fmt.Printf("Running in loop until you hit Ctrl+C")
+		fmt.Printf("Running in loop until you hit Ctrl+C\n")
 	}
-	fmt.Printf("Using random seed: %d", *seed)
+	fmt.Printf("Using random seed: %d\n", *seed)
 	rand.Seed(*seed)
 	cluster := getOSSClusterConn(connectionStr, opts, *clients)
 	for channel_id := 1; uint64(channel_id) <= *clients; channel_id++ {
