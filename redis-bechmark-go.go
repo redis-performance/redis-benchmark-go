@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/filipecosta90/hdrhistogram"
+	hdrhistogram "github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/mediocregopher/radix/v3"
 	"log"
 	"math/rand"
@@ -29,28 +29,12 @@ func stringWithCharset(length int, charset string) string {
 	return string(b)
 }
 
-func ingestionRoutine(cluster *radix.Cluster, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, clusterSlots [][2]uint16, clusterAddr []string) {
+func ingestionRoutine(cluster *radix.Cluster, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int) {
 	defer wg.Done()
 	for i := 0; uint64(i) < number_samples || loop; i++ {
-		rawCurrentCmd, _, keySlot := keyBuildLogic(keyplace, dataplace, datasize, keyspacelen, cmdS)
-		conn := getConnSlot(cluster, keySlot, clusterSlots, clusterAddr)
-		sendCmdLogic(conn, rawCurrentCmd, continueOnError, debug_level)
+		rawCurrentCmd, _, _ := keyBuildLogic(keyplace, dataplace, datasize, keyspacelen, cmdS)
+		sendCmdLogic(cluster, rawCurrentCmd, continueOnError, debug_level)
 	}
-}
-
-func getConnSlot(cluster *radix.Cluster, keySlot uint16, slots [][2]uint16, addr []string) (conn radix.Client) {
-	slotP := 0
-	var err error = nil
-	for i, sArr := range slots {
-		if keySlot >= sArr[0] && keySlot < sArr[1] {
-			slotP = i
-		}
-	}
-	conn, err = cluster.Client(addr[slotP])
-	if err != nil {
-		log.Fatalf("Error getConnSlot for key with slot %d. error = %v", keySlot, err)
-	}
-	return conn
 }
 
 func getOSSClusterConn(addr string, opts []radix.DialOpt, clients uint64) *radix.Cluster {
@@ -108,7 +92,10 @@ func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, continueOnError bool, 
 		}
 	}
 	duration := endT.Sub(startT)
-	latencies.RecordValue(duration.Microseconds())
+	err = latencies.RecordValue(duration.Microseconds())
+	if err != nil {
+		log.Fatalf("Received an error while recording latencies: %v", err)
+	}
 	atomic.AddUint64(&totalCommands, uint64(1))
 }
 
@@ -149,30 +136,19 @@ func main() {
 	stopChan := make(chan struct{})
 	// a WaitGroup for the goroutines to tell us they've stopped
 	wg := sync.WaitGroup{}
-	if *loop == false {
-		fmt.Println(fmt.Sprintf("Total clients: %d. Commands per client: %d Total commands: %d", *clients, samplesPerClient, *numberRequests))
+	if !*loop {
+		fmt.Printf("Total clients: %d. Commands per client: %d Total commands: %d\n", *clients, samplesPerClient, *numberRequests)
 	} else {
-		fmt.Println(fmt.Sprintf("Running in loop until you hit Ctrl+C"))
+		fmt.Printf("Running in loop until you hit Ctrl+C\n")
 	}
-	fmt.Println(fmt.Sprintf("Using random seed: %d", *seed))
+	fmt.Printf("Using random seed: %d\n", *seed)
 	rand.Seed(*seed)
-	var cluster *radix.Cluster
-	cluster = getOSSClusterConn(connectionStr, opts, *clients)
-	clusterSlots := make([][2]uint16, 0, 0)
-	clusterAddr := make([]string, 0, 0)
-
-	for _, ClusterNode := range cluster.Topo() {
-		for _, slot := range ClusterNode.Slots {
-			clusterSlots = append(clusterSlots, slot)
-			clusterAddr = append(clusterAddr, ClusterNode.Addr)
-		}
-	}
-
+	cluster := getOSSClusterConn(connectionStr, opts, *clients)
 	for channel_id := 1; uint64(channel_id) <= *clients; channel_id++ {
 		wg.Add(1)
 		cmd := make([]string, len(args))
 		copy(cmd, args)
-		go ingestionRoutine(cluster, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, clusterSlots, clusterAddr)
+		go ingestionRoutine(cluster, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos)
 	}
 
 	// listen for C-c
@@ -186,14 +162,14 @@ func main() {
 	p95IngestionMs := float64(latencies.ValueAtQuantile(95.0)) / 1000.0
 	p99IngestionMs := float64(latencies.ValueAtQuantile(99.0)) / 1000.0
 
-	fmt.Fprint(os.Stdout, fmt.Sprintf("\n"))
-	fmt.Fprint(os.Stdout, fmt.Sprintf("#################################################\n"))
-	fmt.Fprint(os.Stdout, fmt.Sprintf("Total Duration %.3f Seconds\n", duration.Seconds()))
-	fmt.Fprint(os.Stdout, fmt.Sprintf("Total Errors %d\n", totalErrors))
-	fmt.Fprint(os.Stdout, fmt.Sprintf("Throughput summary: %.0f requests per second\n", messageRate))
-	fmt.Fprint(os.Stdout, "Latency summary (msec):\n")
-	fmt.Fprint(os.Stdout, fmt.Sprintf("    %9s %9s %9s\n", "p50", "p95", "p99"))
-	fmt.Fprint(os.Stdout, fmt.Sprintf("    %9.3f %9.3f %9.3f\n", p50IngestionMs, p95IngestionMs, p99IngestionMs))
+	fmt.Printf("\n")
+	fmt.Printf("#################################################\n")
+	fmt.Printf("Total Duration %.3f Seconds\n", duration.Seconds())
+	fmt.Printf("Total Errors %d\n", totalErrors)
+	fmt.Printf("Throughput summary: %.0f requests per second\n", messageRate)
+	fmt.Printf("Latency summary (msec):\n")
+	fmt.Printf("    %9s %9s %9s\n", "p50", "p95", "p99")
+	fmt.Printf("    %9.3f %9.3f %9.3f\n", p50IngestionMs, p95IngestionMs, p99IngestionMs)
 
 	if closed {
 		return
@@ -211,7 +187,7 @@ func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop b
 	prevTime := time.Now()
 	prevMessageCount := uint64(0)
 	messageRateTs := []float64{}
-	fmt.Fprint(os.Stdout, fmt.Sprintf("%26s %7s %25s %25s %7s %25s %25s\n", "Test time", " ", "Total Commands", "Total Errors", "", "Command Rate", "p50 lat. (msec)"))
+	fmt.Printf("%26s %7s %25s %25s %7s %25s %25s\n", "Test time", " ", "Total Commands", "Total Errors", "", "Command Rate", "p50 lat. (msec)")
 	for {
 		select {
 		case <-tick.C:
@@ -237,10 +213,10 @@ func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop b
 				prevMessageCount = totalCommands
 				prevTime = now
 
-				fmt.Fprint(os.Stdout, fmt.Sprintf("%25.0fs %s %25d %25d [%3.1f%%] %25.2f %25.2f\t", time.Since(start).Seconds(), completionPercentStr, totalCommands, totalErrors, errorPercent, messageRate, p50))
-				fmt.Fprint(os.Stdout, "\r")
+				fmt.Printf("%25.0fs %s %25d %25d [%3.1f%%] %25.2f %25.2f\t", time.Since(start).Seconds(), completionPercentStr, totalCommands, totalErrors, errorPercent, messageRate, p50)
+				fmt.Printf("\r")
 				//w.Flush()
-				if message_limit > 0 && totalCommands >= uint64(message_limit) && loop == false {
+				if message_limit > 0 && totalCommands >= uint64(message_limit) && !loop {
 					return true, start, time.Since(start), totalCommands, messageRateTs
 				}
 
@@ -252,5 +228,4 @@ func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop b
 			return true, start, time.Since(start), totalCommands, messageRateTs
 		}
 	}
-	return false, start, time.Since(start), totalCommands, messageRateTs
 }
