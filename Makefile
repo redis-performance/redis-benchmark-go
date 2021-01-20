@@ -14,6 +14,9 @@ all: test coverage build
 build:
 	$(GOBUILD) .
 
+docker-build:
+	@docker-compose -f docker-compose.yaml build
+
 checkfmt:
 	@echo 'Checking gofmt';\
  	bash -c "diff -u <(echo -n) <(gofmt -d .)";\

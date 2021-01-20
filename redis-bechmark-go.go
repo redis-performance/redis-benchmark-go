@@ -5,7 +5,9 @@ import (
 	"fmt"
 	hdrhistogram "github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/mediocregopher/radix/v3"
+	"golang.org/x/time/rate"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"os/signal"
@@ -18,6 +20,7 @@ var totalCommands uint64
 var totalErrors uint64
 var latencies *hdrhistogram.Histogram
 
+const Inf = rate.Limit(math.MaxFloat64)
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 func stringWithCharset(length int, charset string) string {
@@ -29,39 +32,12 @@ func stringWithCharset(length int, charset string) string {
 	return string(b)
 }
 
-func ingestionRoutine(cluster *radix.Cluster, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int) {
+func ingestionRoutine(conn radix.Client, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter) {
 	defer wg.Done()
 	for i := 0; uint64(i) < number_samples || loop; i++ {
 		rawCurrentCmd, _, _ := keyBuildLogic(keyplace, dataplace, datasize, keyspacelen, cmdS)
-		sendCmdLogic(cluster, rawCurrentCmd, continueOnError, debug_level)
+		sendCmdLogic(conn, rawCurrentCmd, continueOnError, debug_level, useLimiter, rateLimiter)
 	}
-}
-
-func getOSSClusterConn(addr string, opts []radix.DialOpt, clients uint64) *radix.Cluster {
-	var vanillaCluster *radix.Cluster
-	var err error
-
-	customConnFunc := func(network, addr string) (radix.Conn, error) {
-		return radix.Dial(network, addr, opts...,
-		)
-	}
-
-	// this cluster will use the ClientFunc to create a pool to each node in the
-	// cluster.
-	poolFunc := func(network, addr string) (radix.Client, error) {
-		return radix.NewPool(network, addr, int(clients), radix.PoolConnFunc(customConnFunc), radix.PoolPipelineWindow(0, 0))
-	}
-
-	vanillaCluster, err = radix.NewCluster([]string{addr}, radix.ClusterPoolFunc(poolFunc))
-	if err != nil {
-		log.Fatalf("Error preparing for benchmark, while creating new connection. error = %v", err)
-	}
-	// Issue CLUSTER SLOTS command
-	err = vanillaCluster.Sync()
-	if err != nil {
-		log.Fatalf("Error preparing for benchmark, while issuing CLUSTER SLOTS. error = %v", err)
-	}
-	return vanillaCluster
 }
 
 func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS []string) (cmd radix.CmdAction, key string, keySlot uint16) {
@@ -77,7 +53,11 @@ func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS [
 	return rawCmd, key, radix.ClusterSlot([]byte(newCmdS[1]))
 }
 
-func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, continueOnError bool, debug_level int) {
+func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter) {
+	if useRateLimiter {
+		r := rateLimiter.ReserveN(time.Now(), int(1))
+		time.Sleep(r.Delay())
+	}
 	startT := time.Now()
 	var err = conn.Do(cmd)
 	endT := time.Now()
@@ -102,6 +82,7 @@ func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, continueOnError bool, 
 func main() {
 	host := flag.String("h", "127.0.0.1", "Server hostname.")
 	port := flag.Int("p", 12000, "Server port.")
+	rps := flag.Int64("rps", 0, "Max rps. If 0 no limit is applied and the DB is stressed up to maximum.")
 	password := flag.String("a", "", "Password for Redis Auth.")
 	seed := flag.Int64("random-seed", 12345, "random seed to be used.")
 	clients := flag.Uint64("c", 50, "number of clients.")
@@ -109,12 +90,25 @@ func main() {
 	datasize := flag.Uint64("d", 3, "Data size of the expanded string __data__ value in bytes. The benchmark will expand the string __data__ inside an argument with a charset with length specified by this parameter. The substitution changes every time a command is executed.")
 	numberRequests := flag.Uint64("n", 10000000, "Total number of requests")
 	debug := flag.Int("debug", 0, "Client debug level.")
+	clusterMode := flag.Bool("oss-cluster", false, "Enable OSS cluster mode.")
 	loop := flag.Bool("l", false, "Loop. Run the tests forever.")
 	flag.Parse()
 	args := flag.Args()
 	if len(args) < 2 {
 		log.Fatalf("You need to specify a command after the flag command arguments. The commands requires a minimum size of 2 ( command name and key )")
 	}
+
+	var requestRate = Inf
+	var requestBurst = 1
+	useRateLimiter := false
+	if *rps != 0 {
+		requestRate = rate.Limit(*rps)
+		requestBurst = int(*clients)
+		useRateLimiter = true
+	}
+
+	var rateLimiter = rate.NewLimiter(requestRate, requestBurst)
+
 	keyPlaceOlderPos := -1
 	dataPlaceOlderPos := -1
 	for pos, arg := range args {
@@ -143,12 +137,22 @@ func main() {
 	}
 	fmt.Printf("Using random seed: %d\n", *seed)
 	rand.Seed(*seed)
-	cluster := getOSSClusterConn(connectionStr, opts, *clients)
+	var cluster *radix.Cluster
+	var standalone *radix.Pool
+	if *clusterMode {
+		cluster = getOSSClusterConn(connectionStr, opts, *clients)
+	} else {
+		standalone = getStandaloneConn(connectionStr, opts, *clients)
+	}
 	for channel_id := 1; uint64(channel_id) <= *clients; channel_id++ {
 		wg.Add(1)
 		cmd := make([]string, len(args))
 		copy(cmd, args)
-		go ingestionRoutine(cluster, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos)
+		if *clusterMode {
+			go ingestionRoutine(cluster, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+		} else {
+			go ingestionRoutine(standalone, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+		}
 	}
 
 	// listen for C-c
