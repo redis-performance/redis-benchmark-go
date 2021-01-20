@@ -32,11 +32,11 @@ func stringWithCharset(length int, charset string) string {
 	return string(b)
 }
 
-func ingestionRoutine(conn radix.Client, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter) {
+func ingestionRoutine(conn radix.Client, enableMultiExec, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter) {
 	defer wg.Done()
 	for i := 0; uint64(i) < number_samples || loop; i++ {
 		rawCurrentCmd, _, _ := keyBuildLogic(keyplace, dataplace, datasize, keyspacelen, cmdS)
-		sendCmdLogic(conn, rawCurrentCmd, continueOnError, debug_level, useLimiter, rateLimiter)
+		sendCmdLogic(conn, rawCurrentCmd, enableMultiExec, continueOnError, debug_level, useLimiter, rateLimiter)
 	}
 }
 
@@ -53,13 +53,48 @@ func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS [
 	return rawCmd, key, radix.ClusterSlot([]byte(newCmdS[1]))
 }
 
-func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter) {
+func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter) {
 	if useRateLimiter {
 		r := rateLimiter.ReserveN(time.Now(), int(1))
 		time.Sleep(r.Delay())
 	}
+	var err error
 	startT := time.Now()
-	var err = conn.Do(cmd)
+	if enableMultiExec {
+		key := "userFriends"
+		err = conn.Do(radix.WithConn(key, func(c radix.Conn) error {
+
+			// Begin the transaction with a MULTI command
+			if err := conn.Do(radix.Cmd(nil, "MULTI")); err != nil {
+				log.Fatalf("Received an error while preparing for MULTI: %v, error: %v", cmd, err)
+			}
+
+			// If any of the calls after the MULTI call error it's important that
+			// the transaction is discarded. This isn't strictly necessary if the
+			// only possible error is a network error, as the connection would be
+			// closed by the client anyway.
+			var err error
+			defer func() {
+				if err != nil {
+					// The return from DISCARD doesn't matter. If it's an error then
+					// it's a network error and the Conn will be closed by the
+					// client.
+					conn.Do(radix.Cmd(nil, "DISCARD"))
+					log.Fatalf("Received an error while in multi: %v, error: %v", cmd, err)
+				}
+			}()
+
+			// queue up the transaction's commands
+			err = conn.Do(cmd)
+
+			// execute the transaction, capturing the result in a Tuple. We only
+			// care about the first element (the result from GET), so we discard the
+			// second by setting nil.
+			return conn.Do(radix.Cmd(nil, "EXEC"))
+		}))
+	} else {
+		err = conn.Do(cmd)
+	}
 	endT := time.Now()
 	if err != nil {
 		if continueOnError {
@@ -90,6 +125,7 @@ func main() {
 	datasize := flag.Uint64("d", 3, "Data size of the expanded string __data__ value in bytes. The benchmark will expand the string __data__ inside an argument with a charset with length specified by this parameter. The substitution changes every time a command is executed.")
 	numberRequests := flag.Uint64("n", 10000000, "Total number of requests")
 	debug := flag.Int("debug", 0, "Client debug level.")
+	multi := flag.Bool("multi", false, "Run each command in multi-exec.")
 	clusterMode := flag.Bool("oss-cluster", false, "Enable OSS cluster mode.")
 	loop := flag.Bool("l", false, "Loop. Run the tests forever.")
 	flag.Parse()
@@ -149,9 +185,13 @@ func main() {
 		cmd := make([]string, len(args))
 		copy(cmd, args)
 		if *clusterMode {
-			go ingestionRoutine(cluster, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+			go ingestionRoutine(cluster, *multi, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
 		} else {
-			go ingestionRoutine(standalone, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+			if *multi {
+				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+			} else {
+				go ingestionRoutine(standalone, *multi, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+			}
 		}
 	}
 
