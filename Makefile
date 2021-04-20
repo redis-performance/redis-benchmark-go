@@ -7,15 +7,13 @@ GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 GOFMT=$(GOCMD) fmt
+DISTDIR = ./dist
 
 .PHONY: all test coverage
 all: test coverage build
 
 build:
 	$(GOBUILD) .
-
-docker-build:
-	@docker-compose -f docker-compose.yaml build
 
 checkfmt:
 	@echo 'Checking gofmt';\
@@ -44,7 +42,14 @@ coverage: get test
 release:
 	$(GOGET) github.com/mitchellh/gox
 	$(GOGET) github.com/tcnksm/ghr
-	GO111MODULE=on gox  -osarch "linux/amd64 darwin/amd64" -output "dist/redistimeseries-ooo-benchmark_{{.OS}}_{{.Arch}}" .
+	GO111MODULE=on gox  -osarch "linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64" -output "${DISTDIR}/redis-benchmark-go_{{.OS}}_{{.Arch}}" .
+
+publish: release
+	@for f in $(shell ls ${DISTDIR}); \
+	do \
+	echo "copying ${DISTDIR}/$${f}"; \
+	aws s3 cp ${DISTDIR}/$${f} s3://benchmarks.redislabs/tools/redis-benchmark-go/$${f} --acl public-read; \
+	done
 
 fmt:
 	$(GOFMT) ./...
