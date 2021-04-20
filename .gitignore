@@ -1,3 +1,4 @@
 .idea
 coverage.txt
 redis-benchmark-go
+dist
