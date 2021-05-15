@@ -1,9 +1,8 @@
-name: publish
+name: Publish binaries to GH
 
 on:
-  push:
-    tags:
-      - '*'
+  release:
+    types: [ published ]
 
 jobs:
   publish:
