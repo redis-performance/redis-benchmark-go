@@ -8,9 +8,10 @@ GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 GOFMT=$(GOCMD) fmt
 DISTDIR = ./dist
+OS_ARCHs = "linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64"
 
 .PHONY: all test coverage
-all: test coverage build
+all: test build release
 
 build:
 	$(GOBUILD) .
@@ -42,7 +43,7 @@ coverage: get test
 release:
 	$(GOGET) github.com/mitchellh/gox
 	$(GOGET) github.com/tcnksm/ghr
-	GO111MODULE=on gox  -osarch "linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64" -output "${DISTDIR}/redis-benchmark-go_{{.OS}}_{{.Arch}}" .
+	GO111MODULE=on gox  -osarch ${OS_ARCHs} -output "${DISTDIR}/redis-benchmark-go_{{.OS}}_{{.Arch}}" .
 
 publish: release
 	@for f in $(shell ls ${DISTDIR}); \
