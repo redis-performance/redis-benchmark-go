@@ -8,12 +8,23 @@ GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 GOFMT=$(GOCMD) fmt
 DISTDIR = ./dist
+OS_ARCHs = "linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64"
+
+# Build-time GIT variables
+ifeq ($(GIT_SHA),)
+GIT_SHA:=$(shell git rev-parse HEAD)
+endif
+
+ifeq ($(GIT_DIRTY),)
+GIT_DIRTY:=$(shell git diff --no-ext-diff 2> /dev/null | wc -l)
+endif
 
 .PHONY: all test coverage
-all: test coverage build
+all: test build release
 
 build:
-	$(GOBUILD) .
+	$(GOBUILD) \
+	-ldflags="-X 'main.GitSHA1=$(GIT_SHA)' -X 'main.GitDirty=$(GIT_DIRTY)'" .
 
 checkfmt:
 	@echo 'Checking gofmt';\
@@ -42,7 +53,9 @@ coverage: get test
 release:
 	$(GOGET) github.com/mitchellh/gox
 	$(GOGET) github.com/tcnksm/ghr
-	GO111MODULE=on gox  -osarch "linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64" -output "${DISTDIR}/redis-benchmark-go_{{.OS}}_{{.Arch}}" .
+	GO111MODULE=on gox  -osarch ${OS_ARCHs} \
+	    -ldflags="-X 'main.GitSHA1=$(GIT_SHA)' -X 'main.GitDirty=$(GIT_DIRTY)'" \
+	    -output "${DISTDIR}/redis-benchmark-go_{{.OS}}_{{.Arch}}" .
 
 publish: release
 	@for f in $(shell ls ${DISTDIR}); \
