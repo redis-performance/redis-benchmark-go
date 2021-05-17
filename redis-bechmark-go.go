@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -23,6 +22,11 @@ var latencies *hdrhistogram.Histogram
 const Inf = rate.Limit(math.MaxFloat64)
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
+type datapoint struct {
+	success     bool
+	duration_ms int64
+}
+
 func stringWithCharset(length int, charset string) string {
 
 	b := make([]byte, length)
@@ -32,11 +36,11 @@ func stringWithCharset(length int, charset string) string {
 	return string(b)
 }
 
-func ingestionRoutine(conn radix.Client, enableMultiExec, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter) {
+func ingestionRoutine(conn radix.Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter) {
 	defer wg.Done()
 	for i := 0; uint64(i) < number_samples || loop; i++ {
 		rawCurrentCmd, _, _ := keyBuildLogic(keyplace, dataplace, datasize, keyspacelen, cmdS)
-		sendCmdLogic(conn, rawCurrentCmd, enableMultiExec, continueOnError, debug_level, useLimiter, rateLimiter)
+		sendCmdLogic(conn, rawCurrentCmd, enableMultiExec, datapointsChan, continueOnError, debug_level, useLimiter, rateLimiter)
 	}
 }
 
@@ -53,7 +57,7 @@ func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS [
 	return rawCmd, key, radix.ClusterSlot([]byte(newCmdS[1]))
 }
 
-func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter) {
+func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter) {
 	if useRateLimiter {
 		r := rateLimiter.ReserveN(time.Now(), int(1))
 		time.Sleep(r.Delay())
@@ -98,7 +102,6 @@ func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, 
 	endT := time.Now()
 	if err != nil {
 		if continueOnError {
-			atomic.AddUint64(&totalErrors, uint64(1))
 			if debug_level > 0 {
 				log.Println(fmt.Sprintf("Received an error with the following command(s): %v, error: %v", cmd, err))
 			}
@@ -107,11 +110,7 @@ func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, 
 		}
 	}
 	duration := endT.Sub(startT)
-	err = latencies.RecordValue(duration.Microseconds())
-	if err != nil {
-		log.Fatalf("Received an error while recording latencies: %v", err)
-	}
-	atomic.AddUint64(&totalCommands, uint64(1))
+	datapointsChan <- datapoint{!(err != nil), duration.Microseconds()}
 }
 
 func main() {
@@ -190,17 +189,18 @@ func main() {
 	} else {
 		standalone = getStandaloneConn(connectionStr, opts, *clients)
 	}
+	datapointsChan := make(chan datapoint, *numberRequests)
 	for channel_id := 1; uint64(channel_id) <= *clients; channel_id++ {
 		wg.Add(1)
 		cmd := make([]string, len(args))
 		copy(cmd, args)
 		if *clusterMode {
-			go ingestionRoutine(cluster, *multi, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+			go ingestionRoutine(cluster, *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
 		} else {
 			if *multi {
-				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
 			} else {
-				go ingestionRoutine(standalone, *multi, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+				go ingestionRoutine(standalone, *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
 			}
 		}
 	}
@@ -210,7 +210,7 @@ func main() {
 	signal.Notify(c, os.Interrupt)
 
 	tick := time.NewTicker(time.Duration(client_update_tick) * time.Second)
-	closed, _, duration, totalMessages, _ := updateCLI(tick, c, *numberRequests, *loop)
+	closed, _, duration, totalMessages, _ := updateCLI(tick, c, *numberRequests, *loop, datapointsChan)
 	messageRate := float64(totalMessages) / float64(duration.Seconds())
 	p50IngestionMs := float64(latencies.ValueAtQuantile(50.0)) / 1000.0
 	p95IngestionMs := float64(latencies.ValueAtQuantile(95.0)) / 1000.0
@@ -235,17 +235,31 @@ func main() {
 	wg.Wait()
 }
 
-func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop bool) (bool, time.Time, time.Duration, uint64, []float64) {
-
+func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop bool, datapointsChan chan datapoint) (bool, time.Time, time.Duration, uint64, []float64) {
+	var currentErr uint64 = 0
+	var currentCount uint64 = 0
 	start := time.Now()
 	prevTime := time.Now()
 	prevMessageCount := uint64(0)
 	messageRateTs := []float64{}
+	var dp datapoint
 	fmt.Printf("%26s %7s %25s %25s %7s %25s %25s\n", "Test time", " ", "Total Commands", "Total Errors", "", "Command Rate", "p50 lat. (msec)")
 	for {
 		select {
+		case dp = <-datapointsChan:
+			{
+				latencies.RecordValue(dp.duration_ms)
+				if !dp.success {
+					currentErr++
+				}
+				currentCount++
+			}
 		case <-tick.C:
 			{
+				totalCommands += currentCount
+				totalErrors += currentErr
+				currentErr = 0
+				currentCount = 0
 				now := time.Now()
 				took := now.Sub(prevTime)
 				messageRate := float64(totalCommands-prevMessageCount) / float64(took.Seconds())

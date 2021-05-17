@@ -1,6 +1,7 @@
 # Go parameters
 GOCMD=GO111MODULE=on go
 GOBUILD=$(GOCMD) build
+GOBUILDRACE=$(GOCMD) build -race
 GOINSTALL=$(GOCMD) install
 GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
@@ -8,7 +9,7 @@ GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 GOFMT=$(GOCMD) fmt
 DISTDIR = ./dist
-OS_ARCHs = "linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64"
+OS_ARCHs = "linux/amd64 linux/arm64 linux/arm windows/amd64 darwin/amd64 darwin/arm64"
 
 # Build-time GIT variables
 ifeq ($(GIT_SHA),)
@@ -20,11 +21,15 @@ GIT_DIRTY:=$(shell git diff --no-ext-diff 2> /dev/null | wc -l)
 endif
 
 .PHONY: all test coverage
-all: test build release
+all: test build
 
 build:
 	$(GOBUILD) \
 	-ldflags="-X 'main.GitSHA1=$(GIT_SHA)' -X 'main.GitDirty=$(GIT_DIRTY)'" .
+
+build-race:
+	$(GOBUILDRACE) \
+                   	-ldflags="-X 'main.GitSHA1=$(GIT_SHA)' -X 'main.GitDirty=$(GIT_DIRTY)'" .
 
 checkfmt:
 	@echo 'Checking gofmt';\

@@ -11,11 +11,12 @@ If you don't have go on your machine and just want to use the produced binaries 
 
 | OS | Arch | Link |
 | :---         |     :---:      |          ---: |
-| Windows   | amd64     | [redis-benchmark-go_windows_amd64.exe](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_windows_amd64.exe)    |
-| Linux   | amd64     | [redis-benchmark-go_linux_amd64](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_linux_amd64)    |
-| Linux   | arm64     | [redis-benchmark-go_linux_arm64](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_linux_arm64)    |
-| Darwin   | amd64     | [redis-benchmark-go_darwin_amd64](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_darwin_amd64)    |
-| Darwin   | arm64     | [redis-benchmark-go_darwin_arm64](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_darwin_arm64)    |
+| Windows   | amd64  (64-bit X86)     | [redis-benchmark-go_windows_amd64.exe](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_windows_amd64.exe)    |
+| Linux   | amd64  (64-bit X86)     | [redis-benchmark-go_linux_amd64](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_linux_amd64)    |
+| Linux   | arm64 (64-bit ARM)     | [redis-benchmark-go_linux_arm64](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_linux_arm64)    |
+| Linux   | arm (32-bit ARM)    | [redis-benchmark-go_linux_arm](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_linux_arm)    |
+| Darwin   | amd64  (64-bit X86)     | [redis-benchmark-go_darwin_amd64](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_darwin_amd64)    |
+| Darwin   | arm64 (64-bit ARM)     | [redis-benchmark-go_darwin_arm64](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_darwin_arm64)    |
 
 
 
