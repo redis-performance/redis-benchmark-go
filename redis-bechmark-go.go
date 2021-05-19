@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -171,7 +172,8 @@ func main() {
 	if *password != "" {
 		opts = append(opts, radix.DialAuthPass(*password))
 	}
-	connectionStr := fmt.Sprintf("%s:%d", *host, *port)
+	ips, _ := net.LookupIP(*host)
+
 	stopChan := make(chan struct{})
 	// a WaitGroup for the goroutines to tell us they've stopped
 	wg := sync.WaitGroup{}
@@ -183,15 +185,15 @@ func main() {
 	fmt.Printf("Using random seed: %d\n", *seed)
 	rand.Seed(*seed)
 	var cluster *radix.Cluster
-	var standalone *radix.Pool
-	if *clusterMode {
-		cluster = getOSSClusterConn(connectionStr, opts, *clients)
-	} else {
-		standalone = getStandaloneConn(connectionStr, opts, *clients)
-	}
+
 	datapointsChan := make(chan datapoint, *numberRequests)
 	for channel_id := 1; uint64(channel_id) <= *clients; channel_id++ {
 		wg.Add(1)
+		connectionStr := fmt.Sprintf("%s:%d", ips[rand.Int63n(int64(len(ips)))], *port)
+		if *clusterMode {
+			cluster = getOSSClusterConn(connectionStr, opts, *clients)
+		}
+		fmt.Printf("Using connection string %s for client %d\n", connectionStr, channel_id)
 		cmd := make([]string, len(args))
 		copy(cmd, args)
 		if *clusterMode {
@@ -200,7 +202,8 @@ func main() {
 			if *multi {
 				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
 			} else {
-				go ingestionRoutine(standalone, *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+				time.Sleep(time.Millisecond * 10)
 			}
 		}
 	}
@@ -212,6 +215,7 @@ func main() {
 	tick := time.NewTicker(time.Duration(client_update_tick) * time.Second)
 	closed, _, duration, totalMessages, _ := updateCLI(tick, c, *numberRequests, *loop, datapointsChan)
 	messageRate := float64(totalMessages) / float64(duration.Seconds())
+	avgMs := float64(latencies.Mean()) / 1000.0
 	p50IngestionMs := float64(latencies.ValueAtQuantile(50.0)) / 1000.0
 	p95IngestionMs := float64(latencies.ValueAtQuantile(95.0)) / 1000.0
 	p99IngestionMs := float64(latencies.ValueAtQuantile(99.0)) / 1000.0
@@ -222,8 +226,8 @@ func main() {
 	fmt.Printf("Total Errors %d\n", totalErrors)
 	fmt.Printf("Throughput summary: %.0f requests per second\n", messageRate)
 	fmt.Printf("Latency summary (msec):\n")
-	fmt.Printf("    %9s %9s %9s\n", "p50", "p95", "p99")
-	fmt.Printf("    %9.3f %9.3f %9.3f\n", p50IngestionMs, p95IngestionMs, p99IngestionMs)
+	fmt.Printf("    %9s %9s %9s %9s\n", "avg", "p50", "p95", "p99")
+	fmt.Printf("    %9.3f %9.3f %9.3f %9.3f\n", avgMs, p50IngestionMs, p95IngestionMs, p99IngestionMs)
 
 	if closed {
 		return

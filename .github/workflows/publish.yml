@@ -6,11 +6,7 @@ on:
 
 jobs:
   publish:
-    strategy:
-      matrix:
-        go-version: [ 1.16.x ]
-        os: [ ubuntu-latest ]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@master
         with:
@@ -18,7 +14,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v2
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: 1.16.x
       - name: Make Release
         run: make release
       - name: Upload release binaries
