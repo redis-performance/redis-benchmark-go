@@ -37,11 +37,11 @@ func stringWithCharset(length int, charset string) string {
 	return string(b)
 }
 
-func ingestionRoutine(conn radix.Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter) {
+func ingestionRoutine(conn radix.Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
 	defer wg.Done()
 	for i := 0; uint64(i) < number_samples || loop; i++ {
-		rawCurrentCmd, _, _ := keyBuildLogic(keyplace, dataplace, datasize, keyspacelen, cmdS)
-		sendCmdLogic(conn, rawCurrentCmd, enableMultiExec, datapointsChan, continueOnError, debug_level, useLimiter, rateLimiter)
+		rawCurrentCmd, key, _ := keyBuildLogic(keyplace, dataplace, datasize, keyspacelen, cmdS)
+		sendCmdLogic(conn, rawCurrentCmd, enableMultiExec, key, datapointsChan, continueOnError, debug_level, useLimiter, rateLimiter, waitReplicas, waitReplicasMs)
 	}
 }
 
@@ -58,7 +58,7 @@ func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS [
 	return rawCmd, key, radix.ClusterSlot([]byte(newCmdS[1]))
 }
 
-func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter) {
+func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, key string, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
 	if useRateLimiter {
 		r := rateLimiter.ReserveN(time.Now(), int(1))
 		time.Sleep(r.Delay())
@@ -66,7 +66,6 @@ func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, 
 	var err error
 	startT := time.Now()
 	if enableMultiExec {
-		key := "userFriends"
 		err = conn.Do(radix.WithConn(key, func(c radix.Conn) error {
 
 			// Begin the transaction with a MULTI command
@@ -97,6 +96,10 @@ func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, 
 			// second by setting nil.
 			return conn.Do(radix.Cmd(nil, "EXEC"))
 		}))
+	} else if waitReplicas > 0 {
+		// pipeline the command + wait
+		err = conn.Do(radix.Pipeline(cmd,
+			radix.Cmd(nil, "WAIT", fmt.Sprintf("%d", waitReplicas), fmt.Sprintf("%d", waitReplicasMs))))
 	} else {
 		err = conn.Do(cmd)
 	}
@@ -126,6 +129,8 @@ func main() {
 	numberRequests := flag.Uint64("n", 10000000, "Total number of requests")
 	debug := flag.Int("debug", 0, "Client debug level.")
 	multi := flag.Bool("multi", false, "Run each command in multi-exec.")
+	waitReplicas := flag.Int("wait-replicas", 0, "If larger than 0 will wait for the specified number of replicas.")
+	waitReplicasMs := flag.Int("wait-replicas-timeout-ms", 1000, "WAIT timeout when used together with -wait-replicas.")
 	clusterMode := flag.Bool("oss-cluster", false, "Enable OSS cluster mode.")
 	loop := flag.Bool("l", false, "Loop. Run the tests forever.")
 	version := flag.Bool("v", false, "Output version and exit")
@@ -173,6 +178,7 @@ func main() {
 		opts = append(opts, radix.DialAuthPass(*password))
 	}
 	ips, _ := net.LookupIP(*host)
+	fmt.Printf("IPs %v\n", ips)
 
 	stopChan := make(chan struct{})
 	// a WaitGroup for the goroutines to tell us they've stopped
@@ -197,15 +203,16 @@ func main() {
 		cmd := make([]string, len(args))
 		copy(cmd, args)
 		if *clusterMode {
-			go ingestionRoutine(cluster, *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+			go ingestionRoutine(cluster, *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
 		} else {
 			if *multi {
-				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
+				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
 			} else {
-				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter)
-				time.Sleep(time.Millisecond * 10)
+				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
 			}
 		}
+		// delay the creation 10ms for each additional client
+		time.Sleep(time.Millisecond * 10)
 	}
 
 	// listen for C-c

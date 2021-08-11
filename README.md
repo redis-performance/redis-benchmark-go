@@ -86,6 +86,24 @@ Latency summary (msec):
         0.224     0.676     1.501
 ```
 
+## Sample output - Rate limited SET + WAIT example. 39M Keys, 500K commands, @5K RPS
+
+```
+$ redis-benchmark-go -p 6379 -r 39000000 -n 500000 -wait-replicas 1 -wait-replicas-timeout-ms 500 --rps 5000 SET __key__ __data__
+IPs [127.0.0.1]
+Total clients: 50. Commands per client: 10000 Total commands: 500000
+Using random seed: 12345
+                 Test time                    Total Commands              Total Errors                      Command Rate           p50 lat. (msec)
+                       99s [100.0%]                    500000                         0 [0.0%]                   2574.08                      0.28      
+#################################################
+Total Duration 99.000 Seconds
+Total Errors 0
+Throughput summary: 5051 requests per second
+Latency summary (msec):
+          avg       p50       p95       p99
+        0.377     0.275     0.703     2.459
+```
+
 ## Sample output - 10M commands
 
 ```
