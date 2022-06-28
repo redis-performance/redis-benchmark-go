@@ -5,7 +5,7 @@ import (
 	"log"
 )
 
-func getOSSClusterConn(addr string, opts []radix.DialOpt, clients uint64) *radix.Cluster {
+func getOSSClusterConn(addr string, opts []radix.DialOpt, clients int) *radix.Cluster {
 	var vanillaCluster *radix.Cluster
 	var err error
 

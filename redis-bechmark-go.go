@@ -12,6 +12,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -120,10 +122,10 @@ func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, 
 func main() {
 	host := flag.String("h", "127.0.0.1", "Server hostname.")
 	port := flag.Int("p", 12000, "Server port.")
-	rps := flag.Int64("rps", 0, "Max rps. If 0 no limit is applied and the DB is stressed up to maximum.")
+	rps := flag.String("rps", "0", "Max rps. If 0 no limit is applied and the DB is stressed up to maximum. You can also provide a comma separated <timesecs>=<rps>,...")
 	password := flag.String("a", "", "Password for Redis Auth.")
 	seed := flag.Int64("random-seed", 12345, "random seed to be used.")
-	clients := flag.Uint64("c", 50, "number of clients.")
+	clients := flag.String("c", "50", "number of clients. You can also provide a comma separated <timesecs>=<clients>,...")
 	keyspacelen := flag.Uint64("r", 1000000, "keyspace length. The benchmark will expand the string __key__ inside an argument with a number in the specified range from 0 to keyspacelen-1. The substitution changes every time a command is executed.")
 	datasize := flag.Uint64("d", 3, "Data size of the expanded string __data__ value in bytes. The benchmark will expand the string __data__ inside an argument with a charset with length specified by this parameter. The substitution changes every time a command is executed.")
 	numberRequests := flag.Uint64("n", 10000000, "Total number of requests")
@@ -149,17 +151,6 @@ func main() {
 		log.Fatalf("You need to specify a command after the flag command arguments. The commands requires a minimum size of 2 ( command name and key )")
 	}
 
-	var requestRate = Inf
-	var requestBurst = 1
-	useRateLimiter := false
-	if *rps != 0 {
-		requestRate = rate.Limit(*rps)
-		requestBurst = int(*clients)
-		useRateLimiter = true
-	}
-
-	var rateLimiter = rate.NewLimiter(requestRate, requestBurst)
-
 	keyPlaceOlderPos := -1
 	dataPlaceOlderPos := -1
 	for pos, arg := range args {
@@ -170,7 +161,15 @@ func main() {
 			keyPlaceOlderPos = pos
 		}
 	}
-	samplesPerClient := *numberRequests / *clients
+	clientsArr := strings.Split(*clients, ",")
+
+	seconds, clientsStart := extract(clientsArr[0])
+	fmt.Println(seconds, clientsStart)
+	for _, s := range clientsArr[1:] {
+		seconds, clientsAtSec := extract(s)
+		fmt.Println(seconds, clientsAtSec)
+	}
+	samplesPerClient := (*numberRequests) / uint64(clientsStart)
 	client_update_tick := 1
 	latencies = hdrhistogram.New(1, 90000000, 3)
 	opts := make([]radix.DialOpt, 0)
@@ -184,7 +183,7 @@ func main() {
 	// a WaitGroup for the goroutines to tell us they've stopped
 	wg := sync.WaitGroup{}
 	if !*loop {
-		fmt.Printf("Total clients: %d. Commands per client: %d Total commands: %d\n", *clients, samplesPerClient, *numberRequests)
+		fmt.Printf("Starting with a total of %d clients. Commands per client: %d Total commands: %d\n", clientsStart, samplesPerClient, *numberRequests)
 	} else {
 		fmt.Printf("Running in loop until you hit Ctrl+C\n")
 	}
@@ -192,25 +191,20 @@ func main() {
 	rand.Seed(*seed)
 	var cluster *radix.Cluster
 
+	var requestRate = Inf
+	var requestBurst = clientsStart
+	useRateLimiter := false
+	var rateLimiter = rate.NewLimiter(requestRate, int(requestBurst))
+	now := time.Now()
+	if *rps != "0" {
+		useRateLimiter = true
+		rpsArr := strings.Split(*rps, ",")
+		go applyRateLimit(rpsArr, now, rateLimiter)
+	}
+
 	datapointsChan := make(chan datapoint, *numberRequests)
-	for channel_id := 1; uint64(channel_id) <= *clients; channel_id++ {
-		wg.Add(1)
-		connectionStr := fmt.Sprintf("%s:%d", ips[rand.Int63n(int64(len(ips)))], *port)
-		if *clusterMode {
-			cluster = getOSSClusterConn(connectionStr, opts, *clients)
-		}
-		fmt.Printf("Using connection string %s for client %d\n", connectionStr, channel_id)
-		cmd := make([]string, len(args))
-		copy(cmd, args)
-		if *clusterMode {
-			go ingestionRoutine(cluster, *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
-		} else {
-			if *multi {
-				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
-			} else {
-				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
-			}
-		}
+	for channel_id := 1; channel_id <= clientsStart; channel_id++ {
+		spinClient(wg, ips, port, clusterMode, cluster, opts, clientsStart, debug, channel_id, args, multi, datapointsChan, keyspacelen, datasize, samplesPerClient, loop, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, waitReplicas, waitReplicasMs)
 		// delay the creation 10ms for each additional client
 		time.Sleep(time.Millisecond * 10)
 	}
@@ -244,6 +238,65 @@ func main() {
 	close(stopChan)
 	// and wait for them both to reply back
 	wg.Wait()
+}
+
+func extract(clientsArr string) (int, int) {
+	clientsDetail := strings.Split(clientsArr, "=")
+	seconds := 0
+	var clientsStart int
+	if len(clientsDetail) == 1 {
+		clientsStart, _ = strconv.Atoi(clientsDetail[0])
+	} else {
+		seconds, _ = strconv.Atoi(clientsDetail[0])
+		clientsStart, _ = strconv.Atoi(clientsDetail[1])
+	}
+	return seconds, clientsStart
+}
+
+func spinClient(wg sync.WaitGroup, ips []net.IP, port *int, clusterMode *bool, cluster *radix.Cluster, opts []radix.DialOpt, clientsStart int, debug *int, channel_id int, args []string, multi *bool, datapointsChan chan datapoint, keyspacelen *uint64, datasize *uint64, samplesPerClient uint64, loop *bool, keyPlaceOlderPos int, dataPlaceOlderPos int, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas *int, waitReplicasMs *int) {
+	wg.Add(1)
+	connectionStr := fmt.Sprintf("%s:%d", ips[rand.Int63n(int64(len(ips)))], *port)
+	if *clusterMode {
+		cluster = getOSSClusterConn(connectionStr, opts, clientsStart)
+	}
+	if *debug > 0 {
+		fmt.Printf("Using connection string %s for client %d\n", connectionStr, channel_id)
+	}
+	cmd := make([]string, len(args))
+	copy(cmd, args)
+	if *clusterMode {
+		go ingestionRoutine(cluster, *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+	} else {
+		go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+	}
+}
+
+func applyRateLimit(rpsArr []string, now time.Time, rateLimiter *rate.Limiter) {
+	rpsDetail := strings.Split(rpsArr[0], "=")
+	seconds := 0
+	previousSecs := seconds
+	newLimit := 0
+	if len(rpsDetail) == 1 {
+		newLimit, _ = strconv.Atoi(rpsDetail[0])
+	} else {
+		seconds, _ = strconv.Atoi(rpsDetail[0])
+		newLimit, _ = strconv.Atoi(rpsDetail[1])
+	}
+	duration := time.Duration(seconds)
+	newTime := now.Add(duration)
+	fmt.Fprintf(os.Stdout, "Setting an initial target rate of %d rps\n", newLimit)
+	rateLimiter.SetLimitAt(newTime, rate.Limit(newLimit))
+	for _, rpsPair := range rpsArr[1:] {
+		rpsDetail = strings.Split(rpsPair, "=")
+		seconds, _ = strconv.Atoi(rpsDetail[0])
+		duration = time.Duration(seconds)
+		newLimit, _ = strconv.Atoi(rpsDetail[1])
+		time.Sleep((time.Duration(seconds-previousSecs) * time.Second))
+		newTime = time.Now()
+		previousSecs = seconds
+		fmt.Fprintf(os.Stdout, "\nSetting a new target %d rps at time %v (after %d secs)\n", newLimit, newTime, duration)
+		rateLimiter.SetLimitAt(newTime, rate.Limit(newLimit))
+	}
 }
 
 func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop bool, datapointsChan chan datapoint) (bool, time.Time, time.Duration, uint64, []float64) {
