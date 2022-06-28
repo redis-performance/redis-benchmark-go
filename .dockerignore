@@ -10,3 +10,4 @@ arm/
 powerpc/
 mips/
 utils/
+*.json

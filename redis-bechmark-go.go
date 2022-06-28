@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	hdrhistogram "github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/mediocregopher/radix/v3"
 	"golang.org/x/time/rate"
+	"io/ioutil"
 	"log"
 	"math"
 	"math/rand"
@@ -21,6 +23,7 @@ import (
 var totalCommands uint64
 var totalErrors uint64
 var latencies *hdrhistogram.Histogram
+var instantLatencies *hdrhistogram.Histogram
 
 const Inf = rate.Limit(math.MaxFloat64)
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -39,18 +42,21 @@ func stringWithCharset(length int, charset string) string {
 	return string(b)
 }
 
-func ingestionRoutine(conn radix.Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
+func ingestionRoutine(conn radix.Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace, fieldplace int, fieldrange uint64, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
 	defer wg.Done()
 	for i := 0; uint64(i) < number_samples || loop; i++ {
-		rawCurrentCmd, key, _ := keyBuildLogic(keyplace, dataplace, datasize, keyspacelen, cmdS)
+		rawCurrentCmd, key, _ := keyBuildLogic(keyplace, dataplace, fieldplace, datasize, keyspacelen, fieldrange, cmdS)
 		sendCmdLogic(conn, rawCurrentCmd, enableMultiExec, key, datapointsChan, continueOnError, debug_level, useLimiter, rateLimiter, waitReplicas, waitReplicasMs)
 	}
 }
 
-func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS []string) (cmd radix.CmdAction, key string, keySlot uint16) {
+func keyBuildLogic(keyPos int, dataPos int, fieldplace int, datasize, keyspacelen uint64, fieldrange uint64, cmdS []string) (cmd radix.CmdAction, key string, keySlot uint16) {
 	newCmdS := cmdS
 	if keyPos > -1 {
 		newCmdS[keyPos] = fmt.Sprintf("%d", rand.Int63n(int64(keyspacelen)))
+	}
+	if fieldplace > -1 {
+		newCmdS[fieldplace] = fmt.Sprintf("field-%d", rand.Int63n(int64(fieldrange)))
 	}
 	if dataPos > -1 {
 		newCmdS[dataPos] = stringWithCharset(int(datasize), charset)
@@ -124,9 +130,11 @@ func main() {
 	port := flag.Int("p", 12000, "Server port.")
 	rps := flag.String("rps", "0", "Max rps. If 0 no limit is applied and the DB is stressed up to maximum. You can also provide a comma separated <timesecs>=<rps>,...")
 	password := flag.String("a", "", "Password for Redis Auth.")
+	jsonOutFile := flag.String("json-out-file", "", "Name of json output file, if not set, will not print to json.")
 	seed := flag.Int64("random-seed", 12345, "random seed to be used.")
 	clients := flag.String("c", "50", "number of clients. You can also provide a comma separated <timesecs>=<clients>,...")
 	keyspacelen := flag.Uint64("r", 1000000, "keyspace length. The benchmark will expand the string __key__ inside an argument with a number in the specified range from 0 to keyspacelen-1. The substitution changes every time a command is executed.")
+	fieldrange := flag.Uint64("field-range", 10, "field range length. The benchmark will expand the string __field__ inside an argument with a number in the specified range from 0 to fieldrange-1. The substitution changes every time a command is executed.")
 	datasize := flag.Uint64("d", 3, "Data size of the expanded string __data__ value in bytes. The benchmark will expand the string __data__ inside an argument with a charset with length specified by this parameter. The substitution changes every time a command is executed.")
 	numberRequests := flag.Uint64("n", 10000000, "Total number of requests")
 	debug := flag.Int("debug", 0, "Client debug level.")
@@ -152,6 +160,7 @@ func main() {
 	}
 
 	keyPlaceOlderPos := -1
+	fieldPlaceOlderPos := -1
 	dataPlaceOlderPos := -1
 	for pos, arg := range args {
 		if arg == "__data__" {
@@ -159,6 +168,9 @@ func main() {
 		}
 		if arg == "__key__" {
 			keyPlaceOlderPos = pos
+		}
+		if arg == "__field__" {
+			fieldPlaceOlderPos = pos
 		}
 	}
 	clientsArr := strings.Split(*clients, ",")
@@ -172,6 +184,7 @@ func main() {
 	samplesPerClient := (*numberRequests) / uint64(clientsStart)
 	client_update_tick := 1
 	latencies = hdrhistogram.New(1, 90000000, 3)
+	instantLatencies = hdrhistogram.New(1, 90000000, 3)
 	opts := make([]radix.DialOpt, 0)
 	if *password != "" {
 		opts = append(opts, radix.DialAuthPass(*password))
@@ -204,7 +217,7 @@ func main() {
 
 	datapointsChan := make(chan datapoint, *numberRequests)
 	for channel_id := 1; channel_id <= clientsStart; channel_id++ {
-		spinClient(wg, ips, port, clusterMode, cluster, opts, clientsStart, debug, channel_id, args, multi, datapointsChan, keyspacelen, datasize, samplesPerClient, loop, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, waitReplicas, waitReplicasMs)
+		spinClient(wg, ips, port, clusterMode, cluster, opts, clientsStart, debug, channel_id, args, multi, datapointsChan, keyspacelen, datasize, samplesPerClient, loop, keyPlaceOlderPos, dataPlaceOlderPos, fieldPlaceOlderPos, fieldrange, useRateLimiter, rateLimiter, waitReplicas, waitReplicasMs)
 		// delay the creation 10ms for each additional client
 		time.Sleep(time.Millisecond * 10)
 	}
@@ -214,7 +227,7 @@ func main() {
 	signal.Notify(c, os.Interrupt)
 
 	tick := time.NewTicker(time.Duration(client_update_tick) * time.Second)
-	closed, _, duration, totalMessages, _ := updateCLI(tick, c, *numberRequests, *loop, datapointsChan)
+	closed, start, duration, totalMessages, commandRateTs, p50LatenciesTs := updateCLI(tick, c, *numberRequests, *loop, datapointsChan)
 	messageRate := float64(totalMessages) / float64(duration.Seconds())
 	avgMs := float64(latencies.Mean()) / 1000.0
 	p50IngestionMs := float64(latencies.ValueAtQuantile(50.0)) / 1000.0
@@ -229,6 +242,27 @@ func main() {
 	fmt.Printf("Latency summary (msec):\n")
 	fmt.Printf("    %9s %9s %9s %9s\n", "avg", "p50", "p95", "p99")
 	fmt.Printf("    %9.3f %9.3f %9.3f %9.3f\n", avgMs, p50IngestionMs, p95IngestionMs, p99IngestionMs)
+
+	if strings.Compare(*jsonOutFile, "") != 0 {
+
+		res := testResult{
+			StartTime:      start.Unix(),
+			Duration:       duration.Seconds(),
+			CommandRate:    messageRate,
+			TotalCommands:  totalMessages,
+			CommandRateTs:  commandRateTs,
+			P50LatenciesTs: p50LatenciesTs,
+		}
+		file, err := json.MarshalIndent(res, "", " ")
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		err = ioutil.WriteFile(*jsonOutFile, file, 0644)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	if closed {
 		return
@@ -253,7 +287,7 @@ func extract(clientsArr string) (int, int) {
 	return seconds, clientsStart
 }
 
-func spinClient(wg sync.WaitGroup, ips []net.IP, port *int, clusterMode *bool, cluster *radix.Cluster, opts []radix.DialOpt, clientsStart int, debug *int, channel_id int, args []string, multi *bool, datapointsChan chan datapoint, keyspacelen *uint64, datasize *uint64, samplesPerClient uint64, loop *bool, keyPlaceOlderPos int, dataPlaceOlderPos int, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas *int, waitReplicasMs *int) {
+func spinClient(wg sync.WaitGroup, ips []net.IP, port *int, clusterMode *bool, cluster *radix.Cluster, opts []radix.DialOpt, clientsStart int, debug *int, channel_id int, args []string, multi *bool, datapointsChan chan datapoint, keyspacelen *uint64, datasize *uint64, samplesPerClient uint64, loop *bool, keyPlaceOlderPos int, dataPlaceOlderPos int, fieldPlaceOlderPos int, fieldlen *uint64, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas *int, waitReplicasMs *int) {
 	wg.Add(1)
 	connectionStr := fmt.Sprintf("%s:%d", ips[rand.Int63n(int64(len(ips)))], *port)
 	if *clusterMode {
@@ -265,9 +299,9 @@ func spinClient(wg sync.WaitGroup, ips []net.IP, port *int, clusterMode *bool, c
 	cmd := make([]string, len(args))
 	copy(cmd, args)
 	if *clusterMode {
-		go ingestionRoutine(cluster, *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+		go ingestionRoutine(cluster, *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, fieldPlaceOlderPos, *fieldlen, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
 	} else {
-		go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+		go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, fieldPlaceOlderPos, *fieldlen, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
 	}
 }
 
@@ -299,13 +333,14 @@ func applyRateLimit(rpsArr []string, now time.Time, rateLimiter *rate.Limiter) {
 	}
 }
 
-func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop bool, datapointsChan chan datapoint) (bool, time.Time, time.Duration, uint64, []float64) {
+func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop bool, datapointsChan chan datapoint) (bool, time.Time, time.Duration, uint64, []float64, []float64) {
 	var currentErr uint64 = 0
 	var currentCount uint64 = 0
 	start := time.Now()
 	prevTime := time.Now()
 	prevMessageCount := uint64(0)
 	messageRateTs := []float64{}
+	p50LatenciesTs := []float64{}
 	var dp datapoint
 	fmt.Printf("%26s %7s %25s %25s %7s %25s %25s\n", "Test time", " ", "Total Commands", "Total Errors", "", "Command Rate", "p50 lat. (msec)")
 	for {
@@ -335,6 +370,7 @@ func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop b
 				errorPercent := float64(totalErrors) / float64(totalCommands) * 100.0
 
 				p50 := float64(latencies.ValueAtQuantile(50.0)) / 1000.0
+				p50LatenciesTs = append(p50LatenciesTs, p50)
 
 				if prevMessageCount == 0 && totalCommands != 0 {
 					start = time.Now()
@@ -349,15 +385,14 @@ func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop b
 				fmt.Printf("\r")
 				//w.Flush()
 				if message_limit > 0 && totalCommands >= uint64(message_limit) && !loop {
-					return true, start, time.Since(start), totalCommands, messageRateTs
+					return true, start, time.Since(start), totalCommands, messageRateTs, p50LatenciesTs
 				}
-
 				break
 			}
 
 		case <-c:
 			fmt.Println("\nreceived Ctrl-c - shutting down")
-			return true, start, time.Since(start), totalCommands, messageRateTs
+			return true, start, time.Since(start), totalCommands, messageRateTs, p50LatenciesTs
 		}
 	}
 }
