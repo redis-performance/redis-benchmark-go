@@ -127,7 +127,7 @@ func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, 
 
 func main() {
 	host := flag.String("h", "127.0.0.1", "Server hostname.")
-	port := flag.Int("p", 12000, "Server port.")
+	port := flag.Int("p", 6379, "Server port.")
 	rps := flag.String("rps", "0", "Max rps. If 0 no limit is applied and the DB is stressed up to maximum. You can also provide a comma separated <timesecs>=<rps>,...")
 	password := flag.String("a", "", "Password for Redis Auth.")
 	jsonOutFile := flag.String("json-out-file", "", "Name of json output file, if not set, will not print to json.")
