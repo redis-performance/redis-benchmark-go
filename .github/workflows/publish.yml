@@ -23,4 +23,4 @@ jobs:
           binary_name: "./redis-benchmark-go"
           sha256sum: true
           asset_name: redis-benchmark-go-${{ matrix.goos }}-${{ matrix.goarch }}
-          build_command: "make"
+          build_command: "make build"
