@@ -2,3 +2,4 @@
 coverage.txt
 redis-benchmark-go
 dist
+*.json
