@@ -2,37 +2,64 @@
 
 ## Overview
 
-This repo contains code to mimic redis-benchmark capabilities in go solely for OSS redis cluster. 
+This repo contains code to mimic redis-benchmark capabilities in go. 
 
 
-## Standalone binaries ( no Golang needed )
+## Getting Started
+
+### Download Standalone binaries ( no Golang needed )
 
 If you don't have go on your machine and just want to use the produced binaries you can download the following prebuilt bins:
 
-| OS | Arch | Link |
-| :---         |     :---:      |          ---: |
-| Windows   | amd64  (64-bit X86)     | [redis-benchmark-go_windows_amd64.exe](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_windows_amd64.exe)    |
-| Linux   | amd64  (64-bit X86)     | [redis-benchmark-go_linux_amd64](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_linux_amd64)    |
-| Linux   | arm64 (64-bit ARM)     | [redis-benchmark-go_linux_arm64](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_linux_arm64)    |
-| Linux   | arm (32-bit ARM)    | [redis-benchmark-go_linux_arm](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_linux_arm)    |
-| Darwin   | amd64  (64-bit X86)     | [redis-benchmark-go_darwin_amd64](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_darwin_amd64)    |
-| Darwin   | arm64 (64-bit ARM)     | [redis-benchmark-go_darwin_arm64](https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_darwin_arm64)    |
+https://github.com/filipecosta90/redis-benchmark-go/releases/latest
 
+Here's how: 
 
+**Linux**
 
-Here's an example on how to use the above links:
-```bash
-# Fetch this repo
-wget https://s3.amazonaws.com/benchmarks.redislabs/tools/redis-benchmark-go/redis-benchmark-go_linux_amd64
+x86
+```
+wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/download/redis-benchmark-go-linux-amd64.tar.gz -O - | tar -xz
 
-# change permissions
-chmod 755 redis-benchmark-go_linux_amd64
-
-# give it a try 
-./redis-benchmark-go_linux_amd64 --help
+# give it a try
+./redis-benchmark-go --help
 ```
 
-## Installation in a Golang env
+arm64
+```
+wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/download/redis-benchmark-go-linux-arm64.tar.gz -O - | tar -xz
+
+# give it a try
+./redis-benchmark-go --help
+```
+
+**OSX**
+
+x86
+```
+wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/download/redis-benchmark-go-darwin-amd64.tar.gz -O - | tar -xz
+
+# give it a try
+./redis-benchmark-go --help
+```
+
+arm64
+```
+wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/download/redis-benchmark-go-darwin-arm64.tar.gz -O - | tar -xz
+
+# give it a try
+./redis-benchmark-go --help
+```
+
+**Windows**
+```
+wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/download/redis-benchmark-go-windows-amd64.tar.gz -O - | tar -xz
+
+# give it a try
+./redis-benchmark-go --help
+```
+
+### Installation in a Golang env
 
 The easiest way to get and install the benchmark utility with a Go Env is to use
 `go get` and then `go install`:
