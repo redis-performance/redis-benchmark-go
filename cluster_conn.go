@@ -1,31 +1,31 @@
 package main
 
 import (
-	"github.com/mediocregopher/radix/v3"
+	"context"
+	"github.com/mediocregopher/radix/v4"
 	"log"
 )
 
-func getOSSClusterConn(addr string, opts []radix.DialOpt, clients uint64) *radix.Cluster {
-	var vanillaCluster *radix.Cluster
+func getOSSClusterConn(addr string, opts radix.Dialer, clients uint64) radix.Client {
 	var err error
+	var vanillaCluster *radix.Cluster
+	var size int = int(clients)
+	ctx := context.Background()
+	laddr := make([]string, 1)
+	laddr[0] = addr
+	poolConfig := radix.PoolConfig{}
+	poolConfig.Dialer = opts
+	poolConfig.Size = size
 
-	customConnFunc := func(network, addr string) (radix.Conn, error) {
-		return radix.Dial(network, addr, opts...,
-		)
-	}
+	clusterConfig := radix.ClusterConfig{}
+	clusterConfig.PoolConfig = poolConfig
 
-	// this cluster will use the ClientFunc to create a pool to each node in the
-	// cluster.
-	poolFunc := func(network, addr string) (radix.Client, error) {
-		return radix.NewPool(network, addr, int(clients), radix.PoolConnFunc(customConnFunc), radix.PoolPipelineWindow(0, 0))
-	}
-
-	vanillaCluster, err = radix.NewCluster([]string{addr}, radix.ClusterPoolFunc(poolFunc))
+	vanillaCluster, err = clusterConfig.New(ctx, laddr)
 	if err != nil {
 		log.Fatalf("Error preparing for benchmark, while creating new connection. error = %v", err)
 	}
 	// Issue CLUSTER SLOTS command
-	err = vanillaCluster.Sync()
+	err = vanillaCluster.Sync(ctx)
 	if err != nil {
 		log.Fatalf("Error preparing for benchmark, while issuing CLUSTER SLOTS. error = %v", err)
 	}
