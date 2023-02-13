@@ -6,7 +6,7 @@ import (
 	"log"
 )
 
-func getStandaloneConn(addr string, opts radix.Dialer, clients uint64) radix.Client {
+func getStandaloneConn(addr string, opts radix.Dialer, clients uint64) Client {
 	var err error
 	var size int = int(clients)
 	network := "tcp"

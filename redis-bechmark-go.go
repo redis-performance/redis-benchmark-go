@@ -38,7 +38,7 @@ func stringWithCharset(length int, charset string) string {
 	return string(b)
 }
 
-func ingestionRoutine(conn radix.Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
+func ingestionRoutine(conn Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
 	defer wg.Done()
 	for i := 0; uint64(i) < number_samples || loop; i++ {
 		rawCurrentCmd, key, _ := keyBuildLogic(keyplace, dataplace, datasize, keyspacelen, cmdS)
@@ -59,7 +59,7 @@ func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS [
 	return rawCmd, key, radix.ClusterSlot([]byte(newCmdS[1]))
 }
 
-func sendCmdLogic(conn radix.Client, cmd radix.Action, enableMultiExec bool, key string, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
+func sendCmdLogic(conn Client, cmd radix.Action, enableMultiExec bool, key string, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -181,7 +181,7 @@ func main() {
 	samplesPerClient := *numberRequests / *clients
 	client_update_tick := 1
 	latencies = hdrhistogram.New(1, 90000000, 3)
-	opts := &radix.Dialer{}
+	opts := radix.Dialer{}
 	if *password != "" {
 		opts.AuthPass = *password
 	}
