@@ -55,13 +55,11 @@ func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS [
 		newCmdS[dataPos] = stringWithCharset(int(datasize), charset)
 	}
 	rawCmd := radix.Cmd(nil, newCmdS[0], newCmdS[1:]...)
-
 	return rawCmd, key, radix.ClusterSlot([]byte(newCmdS[1]))
 }
 
 func sendCmdLogic(conn Client, cmd radix.Action, enableMultiExec bool, key string, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := context.Background()
 
 	if useRateLimiter {
 		r := rateLimiter.ReserveN(time.Now(), int(1))
@@ -186,9 +184,9 @@ func main() {
 		opts.AuthPass = *password
 	}
 	if *resp == 2 {
-		opts.Protocol = "resp2" //wrong
+		opts.Protocol = "2"
 	} else if *resp == 3 {
-		opts.Protocol = "resp3" //wrong
+		opts.Protocol = "3"
 	}
 	ips, _ := net.LookupIP(*host)
 	fmt.Printf("IPs %v\n", ips)
