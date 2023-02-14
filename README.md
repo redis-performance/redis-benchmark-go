@@ -11,7 +11,7 @@ This repo contains code to mimic redis-benchmark capabilities in go.
 
 If you don't have go on your machine and just want to use the produced binaries you can download the following prebuilt bins:
 
-https://github.com/filipecosta90/redis-benchmark-go/releases/latest
+https://github.com/redis-performance/redis-benchmark-go/releases/latest
 
 Here's how: 
 
@@ -19,7 +19,7 @@ Here's how:
 
 x86
 ```
-wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/download/redis-benchmark-go-linux-amd64.tar.gz -O - | tar -xz
+wget -c https://github.com/redis-performance/redis-benchmark-go/releases/latest/download/redis-benchmark-go-linux-amd64.tar.gz -O - | tar -xz
 
 # give it a try
 ./redis-benchmark-go --help
@@ -27,7 +27,7 @@ wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/down
 
 arm64
 ```
-wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/download/redis-benchmark-go-linux-arm64.tar.gz -O - | tar -xz
+wget -c https://github.com/redis-performance/redis-benchmark-go/releases/latest/download/redis-benchmark-go-linux-arm64.tar.gz -O - | tar -xz
 
 # give it a try
 ./redis-benchmark-go --help
@@ -37,7 +37,7 @@ wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/down
 
 x86
 ```
-wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/download/redis-benchmark-go-darwin-amd64.tar.gz -O - | tar -xz
+wget -c https://github.com/redis-performance/redis-benchmark-go/releases/latest/download/redis-benchmark-go-darwin-amd64.tar.gz -O - | tar -xz
 
 # give it a try
 ./redis-benchmark-go --help
@@ -45,7 +45,7 @@ wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/down
 
 arm64
 ```
-wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/download/redis-benchmark-go-darwin-arm64.tar.gz -O - | tar -xz
+wget -c https://github.com/redis-performance/redis-benchmark-go/releases/latest/download/redis-benchmark-go-darwin-arm64.tar.gz -O - | tar -xz
 
 # give it a try
 ./redis-benchmark-go --help
@@ -53,7 +53,7 @@ wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/down
 
 **Windows**
 ```
-wget -c https://github.com/filipecosta90/redis-benchmark-go/releases/latest/download/redis-benchmark-go-windows-amd64.tar.gz -O - | tar -xz
+wget -c https://github.com/redis-performance/redis-benchmark-go/releases/latest/download/redis-benchmark-go-windows-amd64.tar.gz -O - | tar -xz
 
 # give it a try
 ./redis-benchmark-go --help
@@ -65,8 +65,8 @@ The easiest way to get and install the benchmark utility with a Go Env is to use
 `go get` and then `go install`:
 ```bash
 # Fetch this repo
-go get github.com/filipecosta90/redis-benchmark-go
-cd $GOPATH/src/github.com/filipecosta90/redis-benchmark-go
+go get github.com/redis-performance/redis-benchmark-go
+cd $GOPATH/src/github.com/redis-performance/redis-benchmark-go
 make
 ```
 
@@ -76,24 +76,37 @@ make
 $ redis-benchmark-go --help
 Usage of redis-benchmark-go:
   -a string
-        Password for Redis Auth.
+    	Password for Redis Auth.
   -c uint
-        number of clients. (default 50)
+    	number of clients. (default 50)
   -d uint
-        Data size of the expanded string __data__ value in bytes. The benchmark will expand the string __data__ inside an argument with a charset with length specified by this parameter. The substitution changes every time a command is executed. (default 3)
+    	Data size of the expanded string __data__ value in bytes. The benchmark will expand the string __data__ inside an argument with a charset with length specified by this parameter. The substitution changes every time a command is executed. (default 3)
   -debug int
-        Client debug level.
+    	Client debug level.
   -h string
-        Server hostname. (default "127.0.0.1")
-  -l    Loop. Run the tests forever.
+    	Server hostname. (default "127.0.0.1")
+  -l	Loop. Run the tests forever.
+  -multi
+    	Run each command in multi-exec.
   -n uint
-        Total number of requests (default 100000)
+    	Total number of requests (default 10000000)
+  -oss-cluster
+    	Enable OSS cluster mode.
   -p int
-        Server port. (default 12000)
+    	Server port. (default 12000)
   -r uint
-        keyspace length. The benchmark will expand the string __key__ inside an argument with a number in the specified range from 0 to keyspacelen-1. The substitution changes every time a command is executed. (default 1000000)
+    	keyspace length. The benchmark will expand the string __key__ inside an argument with a number in the specified range from 0 to keyspacelen-1. The substitution changes every time a command is executed. (default 1000000)
   -random-seed int
-        random seed to be used. (default 12345)
+    	random seed to be used. (default 12345)
+  -resp int
+    	redis command response protocol (2 - RESP 2, 3 - RESP 3) (default 2)
+  -rps int
+    	Max rps. If 0 no limit is applied and the DB is stressed up to maximum.
+  -v	Output version and exit
+  -wait-replicas int
+    	If larger than 0 will wait for the specified number of replicas.
+  -wait-replicas-timeout-ms int
+    	WAIT timeout when used together with -wait-replicas. (default 1000)
 ```
 
 ## Sample output - Rate limited example. 1000 Keys, 100K commands, @10K RPS
