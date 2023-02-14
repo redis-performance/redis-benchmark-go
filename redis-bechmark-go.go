@@ -1,10 +1,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	hdrhistogram "github.com/HdrHistogram/hdrhistogram-go"
-	"github.com/mediocregopher/radix/v3"
+	"github.com/mediocregopher/radix/v4"
 	"golang.org/x/time/rate"
 	"log"
 	"math"
@@ -37,7 +38,7 @@ func stringWithCharset(length int, charset string) string {
 	return string(b)
 }
 
-func ingestionRoutine(conn radix.Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
+func ingestionRoutine(conn Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
 	defer wg.Done()
 	for i := 0; uint64(i) < number_samples || loop; i++ {
 		rawCurrentCmd, key, _ := keyBuildLogic(keyplace, dataplace, datasize, keyspacelen, cmdS)
@@ -45,7 +46,7 @@ func ingestionRoutine(conn radix.Client, enableMultiExec bool, datapointsChan ch
 	}
 }
 
-func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS []string) (cmd radix.CmdAction, key string, keySlot uint16) {
+func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS []string) (cmd radix.Action, key string, keySlot uint16) {
 	newCmdS := cmdS
 	if keyPos > -1 {
 		newCmdS[keyPos] = fmt.Sprintf("%d", rand.Int63n(int64(keyspacelen)))
@@ -54,11 +55,12 @@ func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS [
 		newCmdS[dataPos] = stringWithCharset(int(datasize), charset)
 	}
 	rawCmd := radix.Cmd(nil, newCmdS[0], newCmdS[1:]...)
-
 	return rawCmd, key, radix.ClusterSlot([]byte(newCmdS[1]))
 }
 
-func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, key string, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
+func sendCmdLogic(conn Client, cmd radix.Action, enableMultiExec bool, key string, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
+	ctx := context.Background()
+
 	if useRateLimiter {
 		r := rateLimiter.ReserveN(time.Now(), int(1))
 		time.Sleep(r.Delay())
@@ -66,10 +68,10 @@ func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, 
 	var err error
 	startT := time.Now()
 	if enableMultiExec {
-		err = conn.Do(radix.WithConn(key, func(c radix.Conn) error {
+		err = conn.Do(ctx, radix.WithConn(key, func(ctx context.Context, c radix.Conn) error {
 
 			// Begin the transaction with a MULTI command
-			if err := conn.Do(radix.Cmd(nil, "MULTI")); err != nil {
+			if err := conn.Do(ctx, radix.Cmd(nil, "MULTI")); err != nil {
 				log.Fatalf("Received an error while preparing for MULTI: %v, error: %v", cmd, err)
 			}
 
@@ -83,25 +85,28 @@ func sendCmdLogic(conn radix.Client, cmd radix.CmdAction, enableMultiExec bool, 
 					// The return from DISCARD doesn't matter. If it's an error then
 					// it's a network error and the Conn will be closed by the
 					// client.
-					conn.Do(radix.Cmd(nil, "DISCARD"))
+					conn.Do(ctx, radix.Cmd(nil, "DISCARD"))
 					log.Fatalf("Received an error while in multi: %v, error: %v", cmd, err)
 				}
 			}()
 
 			// queue up the transaction's commands
-			err = conn.Do(cmd)
+			err = conn.Do(ctx, cmd)
 
 			// execute the transaction, capturing the result in a Tuple. We only
 			// care about the first element (the result from GET), so we discard the
 			// second by setting nil.
-			return conn.Do(radix.Cmd(nil, "EXEC"))
+			return conn.Do(ctx, radix.Cmd(nil, "EXEC"))
 		}))
 	} else if waitReplicas > 0 {
-		// pipeline the command + wait
-		err = conn.Do(radix.Pipeline(cmd,
-			radix.Cmd(nil, "WAIT", fmt.Sprintf("%d", waitReplicas), fmt.Sprintf("%d", waitReplicasMs))))
+		// Create a new pipeline for the WAIT command
+		p := radix.NewPipeline()
+		// Pass both cmd and waitCmd to the original pipeline
+		p.Append(cmd)
+		p.Append(radix.Cmd(nil, "WAIT", fmt.Sprintf("%d", waitReplicas), fmt.Sprintf("%d", waitReplicasMs)))
+		err = conn.Do(ctx, p)
 	} else {
-		err = conn.Do(cmd)
+		err = conn.Do(ctx, cmd)
 	}
 	endT := time.Now()
 	if err != nil {
@@ -134,6 +139,7 @@ func main() {
 	clusterMode := flag.Bool("oss-cluster", false, "Enable OSS cluster mode.")
 	loop := flag.Bool("l", false, "Loop. Run the tests forever.")
 	version := flag.Bool("v", false, "Output version and exit")
+	resp := flag.Int("resp", 2, "redis command response protocol (2 - RESP 2, 3 - RESP 3)")
 	flag.Parse()
 	git_sha := toolGitSHA1()
 	git_dirty_str := ""
@@ -173,9 +179,14 @@ func main() {
 	samplesPerClient := *numberRequests / *clients
 	client_update_tick := 1
 	latencies = hdrhistogram.New(1, 90000000, 3)
-	opts := make([]radix.DialOpt, 0)
+	opts := radix.Dialer{}
 	if *password != "" {
-		opts = append(opts, radix.DialAuthPass(*password))
+		opts.AuthPass = *password
+	}
+	if *resp == 2 {
+		opts.Protocol = "2"
+	} else if *resp == 3 {
+		opts.Protocol = "3"
 	}
 	ips, _ := net.LookupIP(*host)
 	fmt.Printf("IPs %v\n", ips)
@@ -191,7 +202,6 @@ func main() {
 	fmt.Printf("Using random seed: %d\n", *seed)
 	rand.Seed(*seed)
 	var cluster *radix.Cluster
-
 	datapointsChan := make(chan datapoint, *numberRequests)
 	for channel_id := 1; uint64(channel_id) <= *clients; channel_id++ {
 		wg.Add(1)

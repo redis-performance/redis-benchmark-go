@@ -1,22 +1,24 @@
 package main
 
 import (
-	"github.com/mediocregopher/radix/v3"
+	"context"
+	"github.com/mediocregopher/radix/v4"
 	"log"
 )
 
-func getStandaloneConn(addr string, opts []radix.DialOpt, clients uint64) *radix.Pool {
-	var pool *radix.Pool
+func getStandaloneConn(addr string, opts radix.Dialer, clients uint64) Client {
 	var err error
-
-	customConnFunc := func(network, addr string) (radix.Conn, error) {
-		return radix.Dial(network, addr, opts...,
-		)
-	}
+	var size int = int(clients)
 	network := "tcp"
-	pool, err = radix.NewPool(network, addr, int(clients), radix.PoolConnFunc(customConnFunc), radix.PoolPipelineWindow(0, 0))
+	ctx := context.Background()
+
+	poolConfig := radix.PoolConfig{}
+	poolConfig.Dialer = opts
+	poolConfig.Size = size
+
+	pool, err := poolConfig.New(ctx, network, addr)
 	if err != nil {
-		log.Fatalf("Error preparing for benchmark, while creating new connection. error = %v", err)
+		log.Fatalf("Error preparing for benchmark, while creating new pool. error = %v", err)
 	}
 	return pool
 }
