@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux, darwin,windows]
+        goos: [linux, darwin, windows]
         goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v3
@@ -20,7 +20,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           goos: ${{ matrix.goos }}
           goarch: ${{ matrix.goarch }}
-          binary_name: "./redis-benchmark-go"
+          binary_name: "redis-benchmark-go"
           sha256sum: true
           asset_name: redis-benchmark-go-${{ matrix.goos }}-${{ matrix.goarch }}
           build_command: "make build"
