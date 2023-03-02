@@ -144,7 +144,9 @@ func main() {
 	waitReplicasMs := flag.Int("wait-replicas-timeout-ms", 1000, "WAIT timeout when used together with -wait-replicas.")
 	clusterMode := flag.Bool("oss-cluster", false, "Enable OSS cluster mode.")
 	loop := flag.Bool("l", false, "Loop. Run the tests forever.")
+	betweenClientsDelay := flag.Duration("between-clients-duration", time.Millisecond*0, "Between each client creation, wait this time.")
 	version := flag.Bool("v", false, "Output version and exit")
+	verbose := flag.Bool("verbose", false, "Output verbose info")
 	resp := flag.Int("resp", 2, "redis command response protocol (2 - RESP 2, 3 - RESP 3)")
 	flag.Var(&benchmarkCommands, "cmd", "Specify a query to send in quotes. Each command that you specify is run with its ratio. For example:-cmd=\"SET __key__ __value__\" -cmd-ratio=1")
 	flag.Var(&benchmarkCommandsRatios, "cmd-ratio", "The query ratio vs other queries used in the same benchmark. Each command that you specify is run with its ratio. For example: -cmd=\"SET __key__ __value__\" -cmd-ratio=0.8 -cmd=\"GET __key__\"  -cmd-ratio=0.2")
@@ -178,12 +180,14 @@ func main() {
 		cmds[0] = args
 
 	} else {
-		fmt.Println("checking for -cmd args")
+		if *verbose {
+			fmt.Println("checking for -cmd args")
+		}
 		_, cdf = prepareCommandsDistribution(benchmarkCommands, cmds, cmdRates)
 	}
 
 	for i := 0; i < len(cmds); i++ {
-		cmdKeyplaceHolderPos[i], cmdDataplaceHolderPos[i] = getplaceholderpos(cmds[i])
+		cmdKeyplaceHolderPos[i], cmdDataplaceHolderPos[i] = getplaceholderpos(cmds[i], *verbose)
 	}
 
 	var requestRate = Inf
@@ -230,7 +234,9 @@ func main() {
 		if *clusterMode {
 			cluster = getOSSClusterConn(connectionStr, opts, *clients)
 		}
-		fmt.Printf("Using connection string %s for client %d\n", connectionStr, channel_id)
+		if *verbose {
+			fmt.Printf("Using connection string %s for client %d\n", connectionStr, channel_id)
+		}
 		cmd := make([]string, len(args))
 		copy(cmd, args)
 		if *clusterMode {
@@ -242,8 +248,8 @@ func main() {
 				go benchmarkRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
 			}
 		}
-		// delay the creation 10ms for each additional client
-		time.Sleep(time.Millisecond * 10)
+		// delay the creation for each additional client
+		time.Sleep(*betweenClientsDelay)
 	}
 
 	// listen for C-c
@@ -277,7 +283,7 @@ func main() {
 	wg.Wait()
 }
 
-func getplaceholderpos(args []string) (int, int) {
+func getplaceholderpos(args []string, verbose bool) (int, int) {
 	keyPlaceOlderPos := -1
 	dataPlaceOlderPos := -1
 	for pos, arg := range args {
@@ -287,7 +293,9 @@ func getplaceholderpos(args []string) (int, int) {
 		}
 
 		if strings.Contains(arg, "__key__") {
-			fmt.Println(fmt.Sprintf("Detected __key__ placeholder in pos %d", pos))
+			if verbose {
+				fmt.Println(fmt.Sprintf("Detected __key__ placeholder in pos %d", pos))
+			}
 			keyPlaceOlderPos = pos
 		}
 	}
