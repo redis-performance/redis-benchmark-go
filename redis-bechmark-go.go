@@ -45,7 +45,10 @@ func benchmarkRoutine(conn Client, enableMultiExec bool, datapointsChan chan dat
 	defer wg.Done()
 	for i := 0; uint64(i) < number_samples || loop; i++ {
 		cmdPos := sample(commandsCDF)
-		rawCurrentCmd, key, _ := keyBuildLogic(keyplace[cmdPos], dataplace[cmdPos], datasize, keyspacelen, cmdS[cmdPos])
+		kplace := keyplace[cmdPos]
+		dplace := dataplace[cmdPos]
+		cmds := cmdS[cmdPos]
+		rawCurrentCmd, key, _ := keyBuildLogic(kplace, dplace, datasize, keyspacelen, cmds)
 		sendCmdLogic(conn, rawCurrentCmd, enableMultiExec, key, datapointsChan, continueOnError, debug_level, useLimiter, rateLimiter, waitReplicas, waitReplicasMs)
 	}
 }
@@ -132,6 +135,7 @@ func main() {
 	host := flag.String("h", "127.0.0.1", "Server hostname.")
 	port := flag.Int("p", 12000, "Server port.")
 	rps := flag.Int64("rps", 0, "Max rps. If 0 no limit is applied and the DB is stressed up to maximum.")
+	rpsburst := flag.Int64("rps-burst", 0, "Max rps burst. If 0 the allowed burst will be the ammount of clients.")
 	password := flag.String("a", "", "Password for Redis Auth.")
 	seed := flag.Int64("random-seed", 12345, "random seed to be used.")
 	clients := flag.Uint64("c", 50, "number of clients.")
@@ -147,7 +151,8 @@ func main() {
 	betweenClientsDelay := flag.Duration("between-clients-duration", time.Millisecond*0, "Between each client creation, wait this time.")
 	version := flag.Bool("v", false, "Output version and exit")
 	verbose := flag.Bool("verbose", false, "Output verbose info")
-	resp := flag.Int("resp", 2, "redis command response protocol (2 - RESP 2, 3 - RESP 3)")
+	continueonerror := flag.Bool("continue-on-error", false, "Output verbose info")
+	resp := flag.String("resp", "", "redis command response protocol (2 - RESP 2, 3 - RESP 3). If empty will not enforce it.")
 	flag.Var(&benchmarkCommands, "cmd", "Specify a query to send in quotes. Each command that you specify is run with its ratio. For example:-cmd=\"SET __key__ __value__\" -cmd-ratio=1")
 	flag.Var(&benchmarkCommandsRatios, "cmd-ratio", "The query ratio vs other queries used in the same benchmark. Each command that you specify is run with its ratio. For example: -cmd=\"SET __key__ __value__\" -cmd-ratio=0.8 -cmd=\"GET __key__\"  -cmd-ratio=0.2")
 
@@ -191,12 +196,14 @@ func main() {
 	}
 
 	var requestRate = Inf
-	var requestBurst = 1
+	var requestBurst = int(*rps)
 	useRateLimiter := false
 	if *rps != 0 {
 		requestRate = rate.Limit(*rps)
-		requestBurst = int(*clients)
 		useRateLimiter = true
+		if *rpsburst != 0 {
+			requestBurst = int(*rpsburst)
+		}
 	}
 
 	var rateLimiter = rate.NewLimiter(requestRate, requestBurst)
@@ -208,9 +215,9 @@ func main() {
 	if *password != "" {
 		opts.AuthPass = *password
 	}
-	if *resp == 2 {
+	if *resp == "2" {
 		opts.Protocol = "2"
-	} else if *resp == 3 {
+	} else if *resp == "3" {
 		opts.Protocol = "3"
 	}
 	ips, _ := net.LookupIP(*host)
@@ -232,7 +239,7 @@ func main() {
 		wg.Add(1)
 		connectionStr := fmt.Sprintf("%s:%d", ips[rand.Int63n(int64(len(ips)))], *port)
 		if *clusterMode {
-			cluster = getOSSClusterConn(connectionStr, opts, *clients)
+			cluster = getOSSClusterConn(connectionStr, opts, 1)
 		}
 		if *verbose {
 			fmt.Printf("Using connection string %s for client %d\n", connectionStr, channel_id)
@@ -240,12 +247,12 @@ func main() {
 		cmd := make([]string, len(args))
 		copy(cmd, args)
 		if *clusterMode {
-			go benchmarkRoutine(cluster, *multi, datapointsChan, true, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+			go benchmarkRoutine(cluster, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
 		} else {
 			if *multi {
-				go benchmarkRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+				go benchmarkRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
 			} else {
-				go benchmarkRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+				go benchmarkRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
 			}
 		}
 		// delay the creation for each additional client
