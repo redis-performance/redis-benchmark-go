@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,6 +21,8 @@ import (
 var totalCommands uint64
 var totalErrors uint64
 var latencies *hdrhistogram.Histogram
+var benchmarkCommands arrayStringParameters
+var benchmarkCommandsRatios arrayStringParameters
 
 const Inf = rate.Limit(math.MaxFloat64)
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -38,18 +41,24 @@ func stringWithCharset(length int, charset string) string {
 	return string(b)
 }
 
-func ingestionRoutine(conn Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS []string, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace int, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
+func benchmarkRoutine(conn Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS [][]string, commandsCDF []float32, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace []int, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
 	defer wg.Done()
 	for i := 0; uint64(i) < number_samples || loop; i++ {
-		rawCurrentCmd, key, _ := keyBuildLogic(keyplace, dataplace, datasize, keyspacelen, cmdS)
+		cmdPos := sample(commandsCDF)
+		kplace := keyplace[cmdPos]
+		dplace := dataplace[cmdPos]
+		cmds := cmdS[cmdPos]
+		rawCurrentCmd, key, _ := keyBuildLogic(kplace, dplace, datasize, keyspacelen, cmds)
 		sendCmdLogic(conn, rawCurrentCmd, enableMultiExec, key, datapointsChan, continueOnError, debug_level, useLimiter, rateLimiter, waitReplicas, waitReplicasMs)
 	}
 }
 
 func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS []string) (cmd radix.Action, key string, keySlot uint16) {
-	newCmdS := cmdS
+	newCmdS := make([]string, len(cmdS))
+	copy(newCmdS, cmdS)
 	if keyPos > -1 {
-		newCmdS[keyPos] = fmt.Sprintf("%d", rand.Int63n(int64(keyspacelen)))
+		keyV := fmt.Sprintf("%d", rand.Int63n(int64(keyspacelen)))
+		newCmdS[keyPos] = strings.Replace(newCmdS[keyPos], "__key__", keyV, -1)
 	}
 	if dataPos > -1 {
 		newCmdS[dataPos] = stringWithCharset(int(datasize), charset)
@@ -126,6 +135,7 @@ func main() {
 	host := flag.String("h", "127.0.0.1", "Server hostname.")
 	port := flag.Int("p", 12000, "Server port.")
 	rps := flag.Int64("rps", 0, "Max rps. If 0 no limit is applied and the DB is stressed up to maximum.")
+	rpsburst := flag.Int64("rps-burst", 0, "Max rps burst. If 0 the allowed burst will be the ammount of clients.")
 	password := flag.String("a", "", "Password for Redis Auth.")
 	seed := flag.Int64("random-seed", 12345, "random seed to be used.")
 	clients := flag.Uint64("c", 50, "number of clients.")
@@ -138,9 +148,24 @@ func main() {
 	waitReplicasMs := flag.Int("wait-replicas-timeout-ms", 1000, "WAIT timeout when used together with -wait-replicas.")
 	clusterMode := flag.Bool("oss-cluster", false, "Enable OSS cluster mode.")
 	loop := flag.Bool("l", false, "Loop. Run the tests forever.")
+	betweenClientsDelay := flag.Duration("between-clients-duration", time.Millisecond*0, "Between each client creation, wait this time.")
 	version := flag.Bool("v", false, "Output version and exit")
-	resp := flag.Int("resp", 2, "redis command response protocol (2 - RESP 2, 3 - RESP 3)")
+	verbose := flag.Bool("verbose", false, "Output verbose info")
+	continueonerror := flag.Bool("continue-on-error", false, "Output verbose info")
+	resp := flag.String("resp", "", "redis command response protocol (2 - RESP 2, 3 - RESP 3). If empty will not enforce it.")
+	flag.Var(&benchmarkCommands, "cmd", "Specify a query to send in quotes. Each command that you specify is run with its ratio. For example:-cmd=\"SET __key__ __value__\" -cmd-ratio=1")
+	flag.Var(&benchmarkCommandsRatios, "cmd-ratio", "The query ratio vs other queries used in the same benchmark. Each command that you specify is run with its ratio. For example: -cmd=\"SET __key__ __value__\" -cmd-ratio=0.8 -cmd=\"GET __key__\"  -cmd-ratio=0.2")
+
 	flag.Parse()
+	totalQueries := len(benchmarkCommands)
+	if totalQueries == 0 {
+		totalQueries = 1
+		benchmarkCommands = make([]string, totalQueries)
+	}
+	cmds := make([][]string, totalQueries)
+	cmdRates := make([]float64, totalQueries)
+	cmdKeyplaceHolderPos := make([]int, totalQueries)
+	cmdDataplaceHolderPos := make([]int, totalQueries)
 	git_sha := toolGitSHA1()
 	git_dirty_str := ""
 	if toolGitDirty() {
@@ -150,32 +175,39 @@ func main() {
 		fmt.Fprintf(os.Stdout, "redis-benchmark-go (git_sha1:%s%s)\n", git_sha, git_dirty_str)
 		os.Exit(0)
 	}
+
 	args := flag.Args()
-	if len(args) < 2 {
-		log.Fatalf("You need to specify a command after the flag command arguments. The commands requires a minimum size of 2 ( command name and key )")
+	cdf := []float32{1.0}
+	if len(args) > 0 {
+		if len(args) < 2 {
+			log.Fatalf("You need to specify a command after the flag command arguments. The commands requires a minimum size of 2 ( command name and key )")
+		}
+		cmds[0] = args
+
+	} else {
+		if *verbose {
+			fmt.Println("checking for -cmd args")
+		}
+		_, cdf = prepareCommandsDistribution(benchmarkCommands, cmds, cmdRates)
+	}
+
+	for i := 0; i < len(cmds); i++ {
+		cmdKeyplaceHolderPos[i], cmdDataplaceHolderPos[i] = getplaceholderpos(cmds[i], *verbose)
 	}
 
 	var requestRate = Inf
-	var requestBurst = 1
+	var requestBurst = int(*rps)
 	useRateLimiter := false
 	if *rps != 0 {
 		requestRate = rate.Limit(*rps)
-		requestBurst = int(*clients)
 		useRateLimiter = true
+		if *rpsburst != 0 {
+			requestBurst = int(*rpsburst)
+		}
 	}
 
 	var rateLimiter = rate.NewLimiter(requestRate, requestBurst)
 
-	keyPlaceOlderPos := -1
-	dataPlaceOlderPos := -1
-	for pos, arg := range args {
-		if arg == "__data__" {
-			dataPlaceOlderPos = pos
-		}
-		if arg == "__key__" {
-			keyPlaceOlderPos = pos
-		}
-	}
 	samplesPerClient := *numberRequests / *clients
 	client_update_tick := 1
 	latencies = hdrhistogram.New(1, 90000000, 3)
@@ -183,9 +215,9 @@ func main() {
 	if *password != "" {
 		opts.AuthPass = *password
 	}
-	if *resp == 2 {
+	if *resp == "2" {
 		opts.Protocol = "2"
-	} else if *resp == 3 {
+	} else if *resp == "3" {
 		opts.Protocol = "3"
 	}
 	ips, _ := net.LookupIP(*host)
@@ -207,22 +239,24 @@ func main() {
 		wg.Add(1)
 		connectionStr := fmt.Sprintf("%s:%d", ips[rand.Int63n(int64(len(ips)))], *port)
 		if *clusterMode {
-			cluster = getOSSClusterConn(connectionStr, opts, *clients)
+			cluster = getOSSClusterConn(connectionStr, opts, 1)
 		}
-		fmt.Printf("Using connection string %s for client %d\n", connectionStr, channel_id)
+		if *verbose {
+			fmt.Printf("Using connection string %s for client %d\n", connectionStr, channel_id)
+		}
 		cmd := make([]string, len(args))
 		copy(cmd, args)
 		if *clusterMode {
-			go ingestionRoutine(cluster, *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+			go benchmarkRoutine(cluster, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
 		} else {
 			if *multi {
-				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+				go benchmarkRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
 			} else {
-				go ingestionRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, true, cmd, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, keyPlaceOlderPos, dataPlaceOlderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+				go benchmarkRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
 			}
 		}
-		// delay the creation 10ms for each additional client
-		time.Sleep(time.Millisecond * 10)
+		// delay the creation for each additional client
+		time.Sleep(*betweenClientsDelay)
 	}
 
 	// listen for C-c
@@ -254,6 +288,25 @@ func main() {
 	close(stopChan)
 	// and wait for them both to reply back
 	wg.Wait()
+}
+
+func getplaceholderpos(args []string, verbose bool) (int, int) {
+	keyPlaceOlderPos := -1
+	dataPlaceOlderPos := -1
+	for pos, arg := range args {
+
+		if arg == "__data__" {
+			dataPlaceOlderPos = pos
+		}
+
+		if strings.Contains(arg, "__key__") {
+			if verbose {
+				fmt.Println(fmt.Sprintf("Detected __key__ placeholder in pos %d", pos))
+			}
+			keyPlaceOlderPos = pos
+		}
+	}
+	return keyPlaceOlderPos, dataPlaceOlderPos
 }
 
 func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop bool, datapointsChan chan datapoint) (bool, time.Time, time.Duration, uint64, []float64) {
