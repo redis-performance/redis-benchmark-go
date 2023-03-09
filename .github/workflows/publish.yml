@@ -9,13 +9,18 @@ jobs:
   releases-matrix:
     name: Release Go Binary
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write # To sign.
+      contents: write # To upload release assets.
+      actions: read   # To read workflow path.
     strategy:
+      fail-fast: false
       matrix:
         goos: [linux, darwin, windows]
         goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v3
-      - uses: wangyoucao577/go-release-action@v1.28
+      - uses: wangyoucao577/go-release-action@v1.36
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           goos: ${{ matrix.goos }}
