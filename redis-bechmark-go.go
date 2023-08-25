@@ -153,6 +153,7 @@ func main() {
 	verbose := flag.Bool("verbose", false, "Output verbose info")
 	continueonerror := flag.Bool("continue-on-error", false, "Output verbose info")
 	resp := flag.String("resp", "", "redis command response protocol (2 - RESP 2, 3 - RESP 3). If empty will not enforce it.")
+	nameserver := flag.String("nameserver", "", "the IP address of the DNS name server. The IP address can be an IPv4 or an IPv6 address. If empty will use the default host namserver.")
 	flag.Var(&benchmarkCommands, "cmd", "Specify a query to send in quotes. Each command that you specify is run with its ratio. For example:-cmd=\"SET __key__ __value__\" -cmd-ratio=1")
 	flag.Var(&benchmarkCommandsRatios, "cmd-ratio", "The query ratio vs other queries used in the same benchmark. Each command that you specify is run with its ratio. For example: -cmd=\"SET __key__ __value__\" -cmd-ratio=0.8 -cmd=\"GET __key__\"  -cmd-ratio=0.2")
 
@@ -220,7 +221,27 @@ func main() {
 	} else if *resp == "3" {
 		opts.Protocol = "3"
 	}
-	ips, _ := net.LookupIP(*host)
+
+	ips := make([]net.IP, 0)
+	if *nameserver != "" {
+		fmt.Printf("Using %s to resolve hostname %s\n", *nameserver, *host)
+		r := &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := net.Dialer{
+					Timeout: time.Millisecond * time.Duration(10000),
+				}
+				return d.DialContext(ctx, network, *nameserver)
+			},
+		}
+		ips, _ = r.LookupIP(context.Background(), "ip", *host)
+	} else {
+		ips, _ = net.LookupIP(*host)
+	}
+	if len(ips) < 1 {
+		log.Fatalf("Failed to resolve %s to any IP", *host)
+	}
+
 	fmt.Printf("IPs %v\n", ips)
 
 	stopChan := make(chan struct{})
