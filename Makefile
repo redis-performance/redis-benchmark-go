@@ -56,6 +56,7 @@ test: get build-coverage
 	@mkdir -p .coverdata
 	@go test -cover -args -test.gocoverdir=".coverdata" .
 	@go tool covdata percent -i=.coverdata
+	@go tool covdata textfmt -i=.coverdata -o coverage.txt
 
 release:
 	$(GOGET) github.com/mitchellh/gox
