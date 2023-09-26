@@ -8,38 +8,13 @@ import (
 	"github.com/mediocregopher/radix/v4"
 	"golang.org/x/time/rate"
 	"log"
-	"math"
 	"math/rand"
 	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"time"
 )
-
-var totalCommands uint64
-var totalErrors uint64
-var latencies *hdrhistogram.Histogram
-var benchmarkCommands arrayStringParameters
-var benchmarkCommandsRatios arrayStringParameters
-
-const Inf = rate.Limit(math.MaxFloat64)
-const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
-type datapoint struct {
-	success     bool
-	duration_ms int64
-}
-
-func stringWithCharset(length int, charset string) string {
-
-	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[rand.Intn(len(charset))]
-	}
-	return string(b)
-}
 
 func benchmarkRoutine(conn Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS [][]string, commandsCDF []float32, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace []int, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
 	defer wg.Done()
@@ -48,23 +23,10 @@ func benchmarkRoutine(conn Client, enableMultiExec bool, datapointsChan chan dat
 		kplace := keyplace[cmdPos]
 		dplace := dataplace[cmdPos]
 		cmds := cmdS[cmdPos]
-		rawCurrentCmd, key, _ := keyBuildLogic(kplace, dplace, datasize, keyspacelen, cmds)
+		newCmdS, key := keyBuildLogic(kplace, dplace, datasize, keyspacelen, cmds, charset)
+		rawCurrentCmd := radix.Cmd(nil, newCmdS[0], newCmdS[1:]...)
 		sendCmdLogic(conn, rawCurrentCmd, enableMultiExec, key, datapointsChan, continueOnError, debug_level, useLimiter, rateLimiter, waitReplicas, waitReplicasMs)
 	}
-}
-
-func keyBuildLogic(keyPos int, dataPos int, datasize, keyspacelen uint64, cmdS []string) (cmd radix.Action, key string, keySlot uint16) {
-	newCmdS := make([]string, len(cmdS))
-	copy(newCmdS, cmdS)
-	if keyPos > -1 {
-		keyV := fmt.Sprintf("%d", rand.Int63n(int64(keyspacelen)))
-		newCmdS[keyPos] = strings.Replace(newCmdS[keyPos], "__key__", keyV, -1)
-	}
-	if dataPos > -1 {
-		newCmdS[dataPos] = stringWithCharset(int(datasize), charset)
-	}
-	rawCmd := radix.Cmd(nil, newCmdS[0], newCmdS[1:]...)
-	return rawCmd, key, radix.ClusterSlot([]byte(newCmdS[1]))
 }
 
 func sendCmdLogic(conn Client, cmd radix.Action, enableMultiExec bool, key string, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
@@ -309,25 +271,8 @@ func main() {
 	close(stopChan)
 	// and wait for them both to reply back
 	wg.Wait()
-}
 
-func getplaceholderpos(args []string, verbose bool) (int, int) {
-	keyPlaceOlderPos := -1
-	dataPlaceOlderPos := -1
-	for pos, arg := range args {
-
-		if arg == "__data__" {
-			dataPlaceOlderPos = pos
-		}
-
-		if strings.Contains(arg, "__key__") {
-			if verbose {
-				fmt.Println(fmt.Sprintf("Detected __key__ placeholder in pos %d", pos))
-			}
-			keyPlaceOlderPos = pos
-		}
-	}
-	return keyPlaceOlderPos, dataPlaceOlderPos
+	os.Exit(0)
 }
 
 func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop bool, datapointsChan chan datapoint) (bool, time.Time, time.Duration, uint64, []float64) {

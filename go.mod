@@ -10,4 +10,6 @@ require (
 	github.com/tcnksm/ghr v0.16.0 // indirect
 	golang.org/x/exp v0.0.0-20200224162631-6cc2880d07d6 // indirect
 	golang.org/x/time v0.0.0-20191024005414-555d28b269f0
+		github.com/rueian/rueidis v0.0.100
+
 )
