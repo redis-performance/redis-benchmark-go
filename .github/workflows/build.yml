@@ -1,3 +1,5 @@
+name: "Unit and integration tests"
+
 on:
   push:
     branches: [master]
