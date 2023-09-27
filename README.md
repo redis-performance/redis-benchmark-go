@@ -1,5 +1,7 @@
 # redis-benchmark-go
 
+[![codecov](https://codecov.io/gh/redis-performance/redis-benchmark-go/graph/badge.svg?token=5B3WJTDAWP)](https://codecov.io/gh/redis-performance/redis-benchmark-go)
+
 ## Overview
 
 This repo contains code to mimic redis-benchmark capabilities in go. 
