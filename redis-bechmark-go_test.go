@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"github.com/rueian/rueidis"
+	"github.com/redis/rueidis"
 	"os"
 	"os/exec"
 	"reflect"

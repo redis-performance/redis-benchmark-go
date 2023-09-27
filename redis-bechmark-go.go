@@ -5,32 +5,80 @@ import (
 	"flag"
 	"fmt"
 	hdrhistogram "github.com/HdrHistogram/hdrhistogram-go"
-	"github.com/mediocregopher/radix/v4"
+	radix "github.com/mediocregopher/radix/v4"
+	"github.com/redis/rueidis"
 	"golang.org/x/time/rate"
 	"log"
 	"math/rand"
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"time"
 )
 
-func benchmarkRoutine(conn Client, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS [][]string, commandsCDF []float32, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace []int, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
+func benchmarkRoutine(radixClient Client, ruedisClient rueidis.Client, useRuedis, useCSC, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS [][]string, commandsCDF []float32, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace []int, readOnly []bool, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int, cscDuration time.Duration) {
 	defer wg.Done()
 	for i := 0; uint64(i) < number_samples || loop; i++ {
 		cmdPos := sample(commandsCDF)
 		kplace := keyplace[cmdPos]
 		dplace := dataplace[cmdPos]
+		isReadOnly := readOnly[cmdPos]
 		cmds := cmdS[cmdPos]
 		newCmdS, key := keyBuildLogic(kplace, dplace, datasize, keyspacelen, cmds, charset)
-		rawCurrentCmd := radix.Cmd(nil, newCmdS[0], newCmdS[1:]...)
-		sendCmdLogic(conn, rawCurrentCmd, enableMultiExec, key, datapointsChan, continueOnError, debug_level, useLimiter, rateLimiter, waitReplicas, waitReplicasMs)
+		if useRuedis {
+			sendCmdLogicRuedis(ruedisClient, newCmdS, datapointsChan, continueOnError, debug_level, useLimiter, rateLimiter, useCSC, isReadOnly, cscDuration)
+		} else {
+			sendCmdLogicRadix(radixClient, newCmdS, enableMultiExec, key, datapointsChan, continueOnError, debug_level, useLimiter, rateLimiter, waitReplicas, waitReplicasMs)
+
+		}
 	}
 }
 
-func sendCmdLogic(conn Client, cmd radix.Action, enableMultiExec bool, key string, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
+func sendCmdLogicRuedis(ruedisClient rueidis.Client, newCmdS []string, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter, useCSC, isReadOnly bool, cscDuration time.Duration) {
 	ctx := context.Background()
+	var startT time.Time
+	var endT time.Time
+	var redisResult rueidis.RedisResult
+	cacheHit := false
+
+	if useRateLimiter {
+		r := rateLimiter.ReserveN(time.Now(), int(1))
+		time.Sleep(r.Delay())
+	}
+	var err error
+	arbitrary := ruedisClient.B().Arbitrary(newCmdS...)
+	if useCSC && isReadOnly {
+		startT = time.Now()
+		redisResult = ruedisClient.DoCache(ctx, arbitrary.Cache(), cscDuration)
+		endT = time.Now()
+
+	} else {
+		startT = time.Now()
+		redisResult = ruedisClient.Do(ctx, arbitrary.Build())
+		endT = time.Now()
+	}
+	err = redisResult.NonRedisError()
+	cacheHit = redisResult.IsCacheHit()
+
+	if err != nil {
+		if continueOnError {
+			if debug_level > 0 {
+				log.Println(fmt.Sprintf("Received an error with the following command(s): %v, error: %v", newCmdS, err))
+			}
+		} else {
+			log.Fatalf("Received an error with the following command(s): %v, error: %v", newCmdS, err)
+		}
+	}
+	duration := endT.Sub(startT)
+	datapointsChan <- datapoint{!(err != nil), duration.Microseconds(), cacheHit}
+}
+
+func sendCmdLogicRadix(conn Client, newCmdS []string, enableMultiExec bool, key string, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
+	cmd := radix.Cmd(nil, newCmdS[0], newCmdS[1:]...)
+	ctx := context.Background()
+	cacheHit := false
 
 	if useRateLimiter {
 		r := rateLimiter.ReserveN(time.Now(), int(1))
@@ -90,7 +138,7 @@ func sendCmdLogic(conn Client, cmd radix.Action, enableMultiExec bool, key strin
 		}
 	}
 	duration := endT.Sub(startT)
-	datapointsChan <- datapoint{!(err != nil), duration.Microseconds()}
+	datapointsChan <- datapoint{!(err != nil), duration.Microseconds(), cacheHit}
 }
 
 func main() {
@@ -113,6 +161,10 @@ func main() {
 	betweenClientsDelay := flag.Duration("between-clients-duration", time.Millisecond*0, "Between each client creation, wait this time.")
 	version := flag.Bool("v", false, "Output version and exit")
 	verbose := flag.Bool("verbose", false, "Output verbose info")
+	cscEnabled := flag.Bool("csc", false, "Enable client side caching")
+	cscDuration := flag.Duration("csc-ttl", time.Minute, "Client side cache ttl for cached entries")
+	clientKeepAlive := flag.Duration("client-keepalive", time.Minute, "Client keepalive")
+	cscSizeBytes := flag.Int("csc-per-client-bytes", rueidis.DefaultCacheBytes, "client side cache size that bind to each TCP connection to a single redis instance")
 	continueonerror := flag.Bool("continue-on-error", false, "Output verbose info")
 	resp := flag.String("resp", "", "redis command response protocol (2 - RESP 2, 3 - RESP 3). If empty will not enforce it.")
 	nameserver := flag.String("nameserver", "", "the IP address of the DNS name server. The IP address can be an IPv4 or an IPv6 address. If empty will use the default host namserver.")
@@ -129,6 +181,7 @@ func main() {
 	cmdRates := make([]float64, totalQueries)
 	cmdKeyplaceHolderPos := make([]int, totalQueries)
 	cmdDataplaceHolderPos := make([]int, totalQueries)
+	cmdReadOnly := make([]bool, totalQueries)
 	git_sha := toolGitSHA1()
 	git_dirty_str := ""
 	if toolGitDirty() {
@@ -156,6 +209,9 @@ func main() {
 
 	for i := 0; i < len(cmds); i++ {
 		cmdKeyplaceHolderPos[i], cmdDataplaceHolderPos[i] = getplaceholderpos(cmds[i], *verbose)
+		cmdAllCaps := strings.ToUpper(cmds[i][0])
+		_, isReadOnly := readOnlyCommands[cmdAllCaps]
+		cmdReadOnly[i] = isReadOnly
 	}
 
 	var requestRate = Inf
@@ -178,10 +234,13 @@ func main() {
 	if *password != "" {
 		opts.AuthPass = *password
 	}
+	alwaysRESP2 := false
 	if *resp == "2" {
 		opts.Protocol = "2"
+		alwaysRESP2 = true
 	} else if *resp == "3" {
 		opts.Protocol = "3"
+		alwaysRESP2 = false
 	}
 
 	ips := make([]net.IP, 0)
@@ -217,27 +276,51 @@ func main() {
 	fmt.Printf("Using random seed: %d\n", *seed)
 	rand.Seed(*seed)
 	var cluster *radix.Cluster
+	var radixStandalone radix.Client
+	var ruedisClient rueidis.Client
+	var err error = nil
 	datapointsChan := make(chan datapoint, *numberRequests)
-	for channel_id := 1; uint64(channel_id) <= *clients; channel_id++ {
+	for clientId := 1; uint64(clientId) <= *clients; clientId++ {
 		wg.Add(1)
 		connectionStr := fmt.Sprintf("%s:%d", ips[rand.Int63n(int64(len(ips)))], *port)
-		if *clusterMode {
-			cluster = getOSSClusterConn(connectionStr, opts, 1)
-		}
 		if *verbose {
-			fmt.Printf("Using connection string %s for client %d\n", connectionStr, channel_id)
+			fmt.Printf("Using connection string %s for client %d\n", connectionStr, clientId)
 		}
 		cmd := make([]string, len(args))
 		copy(cmd, args)
-		if *clusterMode {
-			go benchmarkRoutine(cluster, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+		useRuedis := false
+		if *cscEnabled {
+			useRuedis = true
+			clientOptions := rueidis.ClientOption{
+				InitAddress:         []string{connectionStr},
+				Password:            *password,
+				AlwaysPipelining:    false,
+				AlwaysRESP2:         alwaysRESP2,
+				DisableCache:        !*cscEnabled,
+				BlockingPoolSize:    0,
+				PipelineMultiplex:   0,
+				RingScaleEachConn:   1,
+				ReadBufferEachConn:  1024,
+				WriteBufferEachConn: 1024,
+				CacheSizeEachConn:   *cscSizeBytes,
+			}
+			clientOptions.Dialer.KeepAlive = *clientKeepAlive
+			ruedisClient, err = rueidis.NewClient(clientOptions)
+			if err != nil {
+				panic(err)
+			}
+			go benchmarkRoutine(radixStandalone, ruedisClient, useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, *cscDuration)
 		} else {
-			if *multi {
-				go benchmarkRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+			// legacy radix code
+			if *clusterMode {
+				cluster = getOSSClusterConn(connectionStr, opts, 1)
+				go benchmarkRoutine(cluster, ruedisClient, useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, *cscDuration)
 			} else {
-				go benchmarkRoutine(getStandaloneConn(connectionStr, opts, 1), *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs)
+				radixStandalone = getStandaloneConn(connectionStr, opts, 1)
+				go benchmarkRoutine(radixStandalone, ruedisClient, useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, *cscDuration)
 			}
 		}
+
 		// delay the creation for each additional client
 		time.Sleep(*betweenClientsDelay)
 	}
@@ -278,12 +361,13 @@ func main() {
 func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop bool, datapointsChan chan datapoint) (bool, time.Time, time.Duration, uint64, []float64) {
 	var currentErr uint64 = 0
 	var currentCount uint64 = 0
+	var currentCachedCount uint64 = 0
 	start := time.Now()
 	prevTime := time.Now()
 	prevMessageCount := uint64(0)
 	messageRateTs := []float64{}
 	var dp datapoint
-	fmt.Printf("%26s %7s %25s %25s %7s %25s %25s\n", "Test time", " ", "Total Commands", "Total Errors", "", "Command Rate", "p50 lat. (msec)")
+	fmt.Printf("%26s %7s %25s %25s %7s %25s %25s %7s %25s\n", "Test time", " ", "Total Commands", "Total Errors", "", "Command Rate", "Client Cache Hits", "", "p50 lat. (msec)")
 	for {
 		select {
 		case dp = <-datapointsChan:
@@ -292,14 +376,19 @@ func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop b
 				if !dp.success {
 					currentErr++
 				}
+				if dp.cachedEntry {
+					currentCachedCount++
+				}
 				currentCount++
 			}
 		case <-tick.C:
 			{
 				totalCommands += currentCount
+				totalCached += currentCachedCount
 				totalErrors += currentErr
 				currentErr = 0
 				currentCount = 0
+				currentCachedCount = 0
 				now := time.Now()
 				took := now.Sub(prevTime)
 				messageRate := float64(totalCommands-prevMessageCount) / float64(took.Seconds())
@@ -309,6 +398,10 @@ func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop b
 					completionPercentStr = fmt.Sprintf("[%3.1f%%]", completionPercent)
 				}
 				errorPercent := float64(totalErrors) / float64(totalCommands) * 100.0
+				cachedPercent := 0.0
+				if totalCached > 0 {
+					cachedPercent = float64(totalCached) / float64(totalCommands) * 100.0
+				}
 
 				p50 := float64(latencies.ValueAtQuantile(50.0)) / 1000.0
 
@@ -321,7 +414,7 @@ func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit uint64, loop b
 				prevMessageCount = totalCommands
 				prevTime = now
 
-				fmt.Printf("%25.0fs %s %25d %25d [%3.1f%%] %25.2f %25.2f\t", time.Since(start).Seconds(), completionPercentStr, totalCommands, totalErrors, errorPercent, messageRate, p50)
+				fmt.Printf("%25.0fs %s %25d %25d [%3.1f%%] %25.0f %25d [%3.1f%%] %25.3f\t", time.Since(start).Seconds(), completionPercentStr, totalCommands, totalErrors, errorPercent, messageRate, totalCached, cachedPercent, p50)
 				fmt.Printf("\r")
 				//w.Flush()
 				if message_limit > 0 && totalCommands >= uint64(message_limit) && !loop {
