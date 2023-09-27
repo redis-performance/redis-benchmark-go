@@ -23,6 +23,10 @@ endif
 .PHONY: all test coverage
 all: test build
 
+build-coverage:
+	$(GOBUILD) -cover \
+	-ldflags="-X 'main.GitSHA1=$(GIT_SHA)' -X 'main.GitDirty=$(GIT_DIRTY)'" .
+
 build:
 	$(GOBUILD) \
 	-ldflags="-X 'main.GitSHA1=$(GIT_SHA)' -X 'main.GitDirty=$(GIT_DIRTY)'" .
@@ -47,13 +51,12 @@ lint:
 get:
 	$(GOGET) -t -v ./...
 
-test: get
-	$(GOFMT) ./...
-	$(GOTEST) -race -covermode=atomic ./...
-
-coverage: get test
-	$(GOTEST) -race -coverprofile=coverage.txt -covermode=atomic .
-
+test: get build-coverage
+	@rm -fr .coverdata
+	@mkdir -p .coverdata
+	@go test -cover -args -test.gocoverdir=".coverdata" .
+	@go tool covdata percent -i=.coverdata
+	@go tool covdata textfmt -i=.coverdata -o coverage.txt
 
 release:
 	$(GOGET) github.com/mitchellh/gox

@@ -28,8 +28,8 @@ func sample(cdf []float32) int {
 	return bucket
 }
 
-func prepareCommandsDistribution(queries arrayStringParameters, cmds [][]string, cmdRates []float64) (int, []float32) {
-	var totalDifferentCommands = len(cmds)
+func prepareCommandsDistribution(queries arrayStringParameters, cmds [][]string, cmdRates []float64) (totalDifferentCommands int, cdf []float32) {
+	totalDifferentCommands = len(cmds)
 	var totalRateSum = 0.0
 	var err error
 	for i, rawCmdString := range queries {
@@ -54,7 +54,7 @@ func prepareCommandsDistribution(queries arrayStringParameters, cmds [][]string,
 		log.Fatalf("When specifiying -cmd-ratio parameter, you need to have the same number of -cmd and -cmd-ratio parameters. Number of time -cmd ( %d ) != Number of times -cmd-ratio ( %d )", len(benchmarkCommands), len(benchmarkCommandsRatios))
 	}
 	pdf := make([]float32, len(queries))
-	cdf := make([]float32, len(queries))
+	cdf = make([]float32, len(queries))
 	for i := 0; i < len(cmdRates); i++ {
 		pdf[i] = float32(cmdRates[i])
 		cdf[i] = 0
@@ -64,5 +64,5 @@ func prepareCommandsDistribution(queries arrayStringParameters, cmds [][]string,
 	for i := 1; i < len(cmdRates); i++ {
 		cdf[i] = cdf[i-1] + pdf[i]
 	}
-	return totalDifferentCommands, cdf
+	return
 }
