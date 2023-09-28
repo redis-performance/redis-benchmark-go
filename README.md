@@ -254,11 +254,13 @@ OK
 1695911011.777772 [0 127.0.0.1:56574] "EXEC"
 ```
 
+## CSC invalidations
+
 When a key is modified by some client, or is evicted because it has an associated expire time, 
 or evicted because of a maxmemory policy, all the clients with tracking enabled that may have the key cached,
 are notified with an invalidation message.
 
-This can represent a large ammount of invalidation messages per second going through redis in each second. 
+This can represent a large amount of invalidation messages per second going through redis in each second. 
 On the sample benchmark bellow, with 50 clients, doing 5% WRITES and 95% READS on a keyspace length of 10000 Keys, 
 we've observed more than 50K invalidation messages per second and only 20K CSC Hits per second even on this read-heavy scenario. 
 
@@ -282,6 +284,3 @@ Latency summary (msec):
         0.620     0.611     1.461     2.011
 2023/09/28 15:36:13 Saving JSON results file to results.json
 ```
-
-Eviction tracking and overhead. 
-In case of invalidation of the key by other client, redis will send invalidation messages that  
