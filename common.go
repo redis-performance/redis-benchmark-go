@@ -12,6 +12,7 @@ import (
 )
 
 var totalCommands uint64
+var totalCached uint64
 var totalErrors uint64
 var latencies *hdrhistogram.Histogram
 var benchmarkCommands arrayStringParameters
@@ -23,6 +24,7 @@ const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 type datapoint struct {
 	success     bool
 	duration_ms int64
+	cachedEntry bool
 }
 
 func stringWithCharset(length int, charset string) string {

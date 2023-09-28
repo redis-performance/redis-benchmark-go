@@ -21,7 +21,7 @@ GIT_DIRTY:=$(shell git diff --no-ext-diff 2> /dev/null | wc -l)
 endif
 
 .PHONY: all test coverage
-all: test build
+all: build
 
 build-coverage:
 	$(GOBUILD) -cover \
