@@ -27,33 +27,54 @@ func benchmarkRoutine(radixClient Client, ruedisClient rueidis.Client, useRuedis
 		isReadOnly := readOnly[cmdPos]
 		cmds := cmdS[cmdPos]
 		newCmdS, key := keyBuildLogic(kplace, dplace, datasize, keyspacelen, cmds, charset)
+		if useLimiter {
+			r := rateLimiter.ReserveN(time.Now(), int(1))
+			time.Sleep(r.Delay())
+		}
 		if useRuedis {
-			sendCmdLogicRuedis(ruedisClient, newCmdS, datapointsChan, continueOnError, debug_level, useLimiter, rateLimiter, useCSC, isReadOnly, cscDuration)
+			sendCmdLogicRuedis(ruedisClient, newCmdS, enableMultiExec, datapointsChan, continueOnError, debug_level, useCSC, isReadOnly, cscDuration, waitReplicas, waitReplicasMs)
 		} else {
-			sendCmdLogicRadix(radixClient, newCmdS, enableMultiExec, key, datapointsChan, continueOnError, debug_level, useLimiter, rateLimiter, waitReplicas, waitReplicasMs)
+			sendCmdLogicRadix(radixClient, newCmdS, enableMultiExec, key, datapointsChan, continueOnError, debug_level, waitReplicas, waitReplicasMs)
 
 		}
 	}
 }
 
-func sendCmdLogicRuedis(ruedisClient rueidis.Client, newCmdS []string, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter, useCSC, isReadOnly bool, cscDuration time.Duration) {
+func sendCmdLogicRuedis(ruedisClient rueidis.Client, newCmdS []string, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, debug_level int, useCSC, isReadOnly bool, cscDuration time.Duration, waitReplicas, waitReplicasMs int) {
 	ctx := context.Background()
 	var startT time.Time
 	var endT time.Time
 	var redisResult rueidis.RedisResult
 	cacheHit := false
-
-	if useRateLimiter {
-		r := rateLimiter.ReserveN(time.Now(), int(1))
-		time.Sleep(r.Delay())
-	}
 	var err error
-	arbitrary := ruedisClient.B().Arbitrary(newCmdS...)
+	arbitrary := ruedisClient.B().Arbitrary(newCmdS[0])
+	if len(newCmdS) > 1 {
+		arbitrary = arbitrary.Keys(newCmdS[1])
+		if len(newCmdS) > 2 {
+			arbitrary = arbitrary.Args(newCmdS[2:]...)
+		}
+	}
 	if useCSC && isReadOnly {
 		startT = time.Now()
 		redisResult = ruedisClient.DoCache(ctx, arbitrary.Cache(), cscDuration)
 		endT = time.Now()
-
+	} else if enableMultiExec {
+		cmds := make(rueidis.Commands, 0, 3)
+		cmds = append(cmds, ruedisClient.B().Multi().Build())
+		cmds = append(cmds, arbitrary.Build())
+		cmds = append(cmds, ruedisClient.B().Exec().Build())
+		startT = time.Now()
+		resMulti := ruedisClient.DoMulti(ctx, cmds...)
+		endT = time.Now()
+		redisResult = resMulti[1]
+	} else if waitReplicas > 0 {
+		cmds := make(rueidis.Commands, 0, 2)
+		cmds = append(cmds, arbitrary.Build())
+		cmds = append(cmds, ruedisClient.B().Wait().Numreplicas(int64(waitReplicas)).Timeout(int64(waitReplicasMs)).Build())
+		startT = time.Now()
+		resMulti := ruedisClient.DoMulti(ctx, cmds...)
+		endT = time.Now()
+		redisResult = resMulti[0]
 	} else {
 		startT = time.Now()
 		redisResult = ruedisClient.Do(ctx, arbitrary.Build())
@@ -75,15 +96,10 @@ func sendCmdLogicRuedis(ruedisClient rueidis.Client, newCmdS []string, datapoint
 	datapointsChan <- datapoint{!(err != nil), duration.Microseconds(), cacheHit}
 }
 
-func sendCmdLogicRadix(conn Client, newCmdS []string, enableMultiExec bool, key string, datapointsChan chan datapoint, continueOnError bool, debug_level int, useRateLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int) {
+func sendCmdLogicRadix(conn Client, newCmdS []string, enableMultiExec bool, key string, datapointsChan chan datapoint, continueOnError bool, debug_level int, waitReplicas, waitReplicasMs int) {
 	cmd := radix.Cmd(nil, newCmdS[0], newCmdS[1:]...)
 	ctx := context.Background()
 	cacheHit := false
-
-	if useRateLimiter {
-		r := rateLimiter.ReserveN(time.Now(), int(1))
-		time.Sleep(r.Delay())
-	}
 	var err error
 	startT := time.Now()
 	if enableMultiExec {
@@ -162,6 +178,7 @@ func main() {
 	version := flag.Bool("v", false, "Output version and exit")
 	verbose := flag.Bool("verbose", false, "Output verbose info")
 	cscEnabled := flag.Bool("csc", false, "Enable client side caching")
+	useRuedis := flag.Bool("rueidis", false, "Use rueidis as the vanilla underlying client.")
 	cscDuration := flag.Duration("csc-ttl", time.Minute, "Client side cache ttl for cached entries")
 	clientKeepAlive := flag.Duration("client-keepalive", time.Minute, "Client keepalive")
 	cscSizeBytes := flag.Int("csc-per-client-bytes", rueidis.DefaultCacheBytes, "client side cache size that bind to each TCP connection to a single redis instance")
@@ -288,9 +305,7 @@ func main() {
 		}
 		cmd := make([]string, len(args))
 		copy(cmd, args)
-		useRuedis := false
-		if *cscEnabled {
-			useRuedis = true
+		if *cscEnabled || *useRuedis {
 			clientOptions := rueidis.ClientOption{
 				InitAddress:         []string{connectionStr},
 				Password:            *password,
@@ -309,15 +324,15 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			go benchmarkRoutine(radixStandalone, ruedisClient, useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, *cscDuration)
+			go benchmarkRoutine(radixStandalone, ruedisClient, *useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, *cscDuration)
 		} else {
 			// legacy radix code
 			if *clusterMode {
 				cluster = getOSSClusterConn(connectionStr, opts, 1)
-				go benchmarkRoutine(cluster, ruedisClient, useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, *cscDuration)
+				go benchmarkRoutine(cluster, ruedisClient, *useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, *cscDuration)
 			} else {
 				radixStandalone = getStandaloneConn(connectionStr, opts, 1)
-				go benchmarkRoutine(radixStandalone, ruedisClient, useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, *cscDuration)
+				go benchmarkRoutine(radixStandalone, ruedisClient, *useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, *cscDuration)
 			}
 		}
 
