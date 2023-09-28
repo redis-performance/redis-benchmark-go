@@ -182,3 +182,105 @@ Latency summary (msec):
           p50       p95       p99
         0.162     0.372     0.460
 ```
+
+# Client side Caching benchmark
+
+Client side caching was introduced in [version v1.0.0](https://github.com/redis-performance/redis-benchmark-go/releases/tag/v1.0.0) of this tool and requires the usage of the rueidis vanilla client.
+This means that for using CSC you need to use a minimum of 2 extra flags on your benchmark, namely `-rueidis -csc`.
+
+Bellow you can find all flags that control CSC behaviour:
+
+```
+  -csc
+        Enable client side caching
+  -csc-per-client-bytes int
+        client side cache size that bind to each TCP connection to a single redis instance (default 134217728)
+  -csc-ttl duration
+        Client side cache ttl for cached entries (default 1m0s)
+  -rueidis
+        Use rueidis as the vanilla underlying client.
+```
+
+If you take the following benchmark command
+```
+$ ./redis-benchmark-go -rueidis -csc -n 2 -r 1 -c 1  -p 6379 GET key
+```
+
+
+The above example will send the following command to redis in case of cache miss:
+
+```
+//  CLIENT CACHING YES
+//  MULTI
+//  PTTL k
+//  GET k
+//  EXEC
+```
+If the key's TTL on the server is smaller than the client side TTL, the client side TTL will be capped.
+
+On the second command execution for the same client, the command won't be issued to the server as visible bellow on the CSC Hits/sec column.
+
+
+```
+$ ./redis-benchmark-go -rueidis -csc -n 2 -r 1 -c 1  -p 6379 GET key
+IPs [127.0.0.1]
+Total clients: 1. Commands per client: 2 Total commands: 2
+Using random seed: 12345
+                 Test time                    Total Commands              Total Errors                      Command Rate              CSC Hits/sec     CSC Invalidations/sec           p50 lat. (msec)
+                        0s [100.0%]                         2                         0 [0.0%]                         2                         1                         0                     0.002  
+#################################################
+Total Duration 0.000 Seconds
+Total Errors 0
+Throughput summary: 19218 requests per second
+                    9609 CSC Hits per second
+                    0 CSC Evicts per second
+Latency summary (msec):
+          avg       p50       p95       p99
+        0.379     0.002     0.756     0.756
+
+```
+
+and as visible by the following server side monitoring during the above benchmark.
+
+```
+$ redis-cli monitor
+OK
+1695911011.777347 [0 127.0.0.1:56574] "HELLO" "3"
+1695911011.777366 [0 127.0.0.1:56574] "CLIENT" "TRACKING" "ON" "OPTIN"
+1695911011.777738 [0 127.0.0.1:56574] "CLIENT" "CACHING" "YES"
+1695911011.777748 [0 127.0.0.1:56574] "MULTI"
+1695911011.777759 [0 127.0.0.1:56574] "PTTL" "key"
+1695911011.777768 [0 127.0.0.1:56574] "GET" "key"
+1695911011.777772 [0 127.0.0.1:56574] "EXEC"
+```
+
+## CSC invalidations
+
+When a key is modified by some client, or is evicted because it has an associated expire time, 
+or evicted because of a maxmemory policy, all the clients with tracking enabled that may have the key cached,
+are notified with an invalidation message.
+
+This can represent a large amount of invalidation messages per second going through redis in each second. 
+On the sample benchmark bellow, with 50 clients, doing 5% WRITES and 95% READS on a keyspace length of 10000 Keys, 
+we've observed more than 50K invalidation messages per second and only 20K CSC Hits per second even on this read-heavy scenario. 
+
+The goal of this CSC measurement capacibility is to precisely help you understand the do's and dont's on CSC and when it's best to use or avoid it. 
+
+```
+$ ./redis-benchmark-go -p 6379  -rueidis -r 10000 -csc -cmd "SET __key__ __data__" -cmd-ratio 0.05 -cmd "GET __key__" -cmd-ratio 0.95 --json-out-file results.json
+IPs [127.0.0.1]
+Total clients: 50. Commands per client: 200000 Total commands: 10000000
+Using random seed: 12345
+                 Test time                    Total Commands              Total Errors                      Command Rate              CSC Hits/sec     CSC Invalidations/sec           p50 lat. (msec)
+                      125s [100.0%]                  10000000                         0 [0.0%]                     25931                      9842                     16777                     0.611  
+#################################################
+Total Duration 125.002 Seconds
+Total Errors 0
+Throughput summary: 79999 requests per second
+                    20651 CSC Hits per second
+                    54272 CSC Evicts per second
+Latency summary (msec):
+          avg       p50       p95       p99
+        0.620     0.611     1.461     2.011
+2023/09/28 15:36:13 Saving JSON results file to results.json
+```
