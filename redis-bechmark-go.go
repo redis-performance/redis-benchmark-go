@@ -162,6 +162,7 @@ func main() {
 	port := flag.Int("p", 12000, "Server port.")
 	rps := flag.Int64("rps", 0, "Max rps. If 0 no limit is applied and the DB is stressed up to maximum.")
 	rpsburst := flag.Int64("rps-burst", 0, "Max rps burst. If 0 the allowed burst will be the ammount of clients.")
+	username := flag.String("u", "", "Username for Redis Auth.")
 	password := flag.String("a", "", "Password for Redis Auth.")
 	seed := flag.Int64("random-seed", 12345, "random seed to be used.")
 	clients := flag.Uint64("c", 50, "number of clients.")
@@ -251,6 +252,9 @@ func main() {
 	if *password != "" {
 		opts.AuthPass = *password
 	}
+	if *username != "" {
+		opts.AuthUser = *username
+	}
 	alwaysRESP2 := false
 	if *resp == "2" {
 		opts.Protocol = "2"
@@ -308,6 +312,7 @@ func main() {
 		if *cscEnabled || *useRuedis {
 			clientOptions := rueidis.ClientOption{
 				InitAddress:         []string{connectionStr},
+				Username:            *username,
 				Password:            *password,
 				AlwaysPipelining:    false,
 				AlwaysRESP2:         alwaysRESP2,
