@@ -100,7 +100,9 @@ func TestGecko(t *testing.T) {
 		args               []string
 	}{
 		{"simple run", 0, 1, 100, []string{"-p", "6379", "-c", "10", "-n", "100", "HSET", "hash:1", "field", "value"}},
+		{"simple run username", 0, 1, 100, []string{"-p", "6379", "-u", "default", "-c", "10", "-n", "100", "HSET", "hash:1", "field", "value"}},
 		{"simple run rueidis", 0, 1, 100, []string{"-p", "6379", "-rueidis", "-c", "10", "-n", "100", "HSET", "hash:1", "field", "value"}},
+		{"simple run rueidis username", 0, 1, 100, []string{"-p", "6379", "-rueidis", "-u", "default", "-c", "10", "-n", "100", "HSET", "hash:1", "field", "value"}},
 		{"run with multi-exec rueidis", 0, 1, 100, []string{"-p", "6379", "-rueidis", "-multi", "-c", "10", "-n", "100", "-rps", "100", "HSET", "hash:1", "field", "value"}},
 		{"run with rps", 0, 1, 100, []string{"-p", "6379", "-c", "10", "-n", "100", "-rps", "100", "HSET", "hash:1", "field", "value"}},
 		{"run with rps rueidis", 0, 1, 100, []string{"-p", "6379", "-rueidis", "-c", "10", "-n", "100", "-rps", "100", "HSET", "hash:1", "field", "value"}},
