@@ -9,13 +9,19 @@ import (
 	"math"
 	"math/rand"
 	"strings"
+	"sync"
 )
 
 var totalCommands uint64
+var totalCached uint64
 var totalErrors uint64
+var totalCachedInvalidations uint64
 var latencies *hdrhistogram.Histogram
+var latenciesTick *hdrhistogram.Histogram
 var benchmarkCommands arrayStringParameters
 var benchmarkCommandsRatios arrayStringParameters
+
+var cscInvalidationMutex sync.Mutex
 
 const Inf = rate.Limit(math.MaxFloat64)
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -23,6 +29,7 @@ const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 type datapoint struct {
 	success     bool
 	duration_ms int64
+	cachedEntry bool
 }
 
 func stringWithCharset(length int, charset string) string {

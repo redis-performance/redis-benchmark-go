@@ -32,12 +32,14 @@ func prepareCommandsDistribution(queries arrayStringParameters, cmds [][]string,
 	totalDifferentCommands = len(cmds)
 	var totalRateSum = 0.0
 	var err error
+	if len(benchmarkCommandsRatios) == 0 {
+		for i, _ := range queries {
+			cmdRates[i] = 1.0 / float64(len(queries))
+		}
+	}
 	for i, rawCmdString := range queries {
 		cmds[i], _ = shellwords.Parse(rawCmdString)
-		if i >= len(benchmarkCommandsRatios) {
-			cmdRates[i] = 1
-
-		} else {
+		if i < len(benchmarkCommandsRatios) {
 			cmdRates[i], err = strconv.ParseFloat(benchmarkCommandsRatios[i], 64)
 			if err != nil {
 				log.Fatalf("Error while converting query-rate param %s: %v", benchmarkCommandsRatios[i], err)
