@@ -13,6 +13,7 @@ require (
 require (
 	github.com/tilinna/clock v1.0.2 // indirect
 	golang.org/x/exp v0.0.0-20200224162631-6cc2880d07d6 // indirect
+	golang.org/x/sys v0.13.0 // indirect
 )
 
-replace github.com/redis/rueidis => github.com/filipecosta90/rueidis v0.0.0-20230927221707-2d17d4ee82e3
+replace github.com/redis/rueidis => github.com/filipecosta90/rueidis v0.0.0-20231129020706-4fbfa4b6c663

@@ -110,6 +110,9 @@ func TestGecko(t *testing.T) {
 		{"run with key placeholder rueidis", 0, 10, 1000, []string{"-p", "6379", "-rueidis", "-c", "10", "-n", "1000", "-r", "10", "-rps", "10000", "HSET", "hash:__key__", "field", "value"}},
 		{"run with multiple commands", 0, 20, 1000, []string{"-p", "6379", "-c", "10", "-n", "1000", "-r", "10", "-rps", "10000", "-cmd", "HSET hash:__key__ field value", "-cmd-ratio", "0.5", "-cmd", "SET string:__key__ value", "-cmd-ratio", "0.5"}},
 		{"run with multiple commands rueidis", 0, 20, 1000, []string{"-p", "6379", "-rueidis", "-c", "10", "-n", "1000", "-r", "10", "-rps", "10000", "-cmd", "HSET hash:__key__ field value", "-cmd-ratio", "0.5", "-cmd", "SET string:__key__ value", "-cmd-ratio", "0.5"}},
+		{"run with multiple commands rueidis CSC", 0, 20, 1000, []string{"-p", "6379", "-rueidis", "-c", "10", "-n", "1000", "-r", "10", "-rps", "10000", "-cmd", "HSET hash:__key__ field value", "-csc", "-cmd-ratio", "0.5", "-cmd", "SET string:__key__ value", "-cmd-ratio", "0.5"}},
+		{"run with multiple commands rueidis CSC with MULTI/EXEC", 0, 20, 1000, []string{"-p", "6379", "-rueidis", "-c", "10", "-n", "1000", "-r", "10", "-rps", "10000", "-cmd", "HSET hash:__key__ field value", "-csc", "-csc-use-multi-exec", "-cmd-ratio", "0.5", "-cmd", "SET string:__key__ value", "-cmd-ratio", "0.5"}},
+
 		{"bad run", 2, 0, 0, []string{"-p", "xx"}},
 	}
 	host, password := getTestConnectionDetails()
