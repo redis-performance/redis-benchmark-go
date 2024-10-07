@@ -2,12 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
-	hdrhistogram "github.com/HdrHistogram/hdrhistogram-go"
-	radix "github.com/mediocregopher/radix/v4"
-	"github.com/redis/rueidis"
-	"golang.org/x/time/rate"
 	"log"
 	"math/rand"
 	"net"
@@ -16,6 +13,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	hdrhistogram "github.com/HdrHistogram/hdrhistogram-go"
+	radix "github.com/mediocregopher/radix/v4"
+	"github.com/redis/rueidis"
+	"golang.org/x/time/rate"
 )
 
 func benchmarkRoutine(radixClient Client, ruedisClient rueidis.Client, useRuedis, useCSC, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS [][]string, commandsCDF []float32, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace []int, readOnly []bool, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int, cacheOptions *rueidis.CacheOptions) {
@@ -212,6 +214,8 @@ func main() {
 	nameserver := flag.String("nameserver", "", "the IP address of the DNS name server. The IP address can be an IPv4 or an IPv6 address. If empty will use the default host namserver.")
 	flag.Var(&benchmarkCommands, "cmd", "Specify a query to send in quotes. Each command that you specify is run with its ratio. For example:-cmd=\"SET __key__ __value__\" -cmd-ratio=1")
 	flag.Var(&benchmarkCommandsRatios, "cmd-ratio", "The query ratio vs other queries used in the same benchmark. Each command that you specify is run with its ratio. For example: -cmd=\"SET __key__ __value__\" -cmd-ratio=0.8 -cmd=\"GET __key__\"  -cmd-ratio=0.2")
+	tlsEnabled := flag.Bool("tls", false, "Use TLS")
+	tlsSkipCertCheck := flag.Bool("tls-skip", false, "Ignore TLS certificate check")
 
 	flag.Parse()
 	totalQueries := len(benchmarkCommands)
@@ -287,6 +291,15 @@ func main() {
 	} else if *resp == "3" {
 		opts.Protocol = "3"
 		alwaysRESP2 = false
+	}
+	if *tlsEnabled {
+		conf := &tls.Config{
+			InsecureSkipVerify: *tlsSkipCertCheck,
+		}
+		opts.NetDialer = &tls.Dialer{
+			NetDialer: nil,
+			Config:    conf,
+		}
 	}
 
 	ips := make([]net.IP, 0)
