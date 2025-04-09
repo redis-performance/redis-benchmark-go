@@ -2,12 +2,9 @@ package main
 
 import (
 	"context"
+	tls "crypto/tls"
 	"flag"
 	"fmt"
-	hdrhistogram "github.com/HdrHistogram/hdrhistogram-go"
-	radix "github.com/mediocregopher/radix/v4"
-	"github.com/redis/rueidis"
-	"golang.org/x/time/rate"
 	"log"
 	"math/rand"
 	"net"
@@ -16,6 +13,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	hdrhistogram "github.com/HdrHistogram/hdrhistogram-go"
+	radix "github.com/mediocregopher/radix/v4"
+	"github.com/redis/rueidis"
+	"golang.org/x/time/rate"
 )
 
 func benchmarkRoutine(radixClient Client, ruedisClient rueidis.Client, useRuedis, useCSC, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS [][]string, commandsCDF []float32, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace []int, readOnly []bool, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int, cacheOptions *rueidis.CacheOptions) {
@@ -182,6 +184,7 @@ func main() {
 	rpsburst := flag.Int64("rps-burst", 0, "Max rps burst. If 0 the allowed burst will be the ammount of clients.")
 	username := flag.String("u", "", "Username for Redis Auth.")
 	password := flag.String("a", "", "Password for Redis Auth.")
+	enableTls := flag.Bool("tls", false, "Use TLS connection.")
 	jsonOutFile := flag.String("json-out-file", "", "Results file. If empty will not save.")
 	seed := flag.Int64("random-seed", 12345, "random seed to be used.")
 	clients := flag.Uint64("c", 50, "number of clients.")
@@ -287,6 +290,14 @@ func main() {
 	} else if *resp == "3" {
 		opts.Protocol = "3"
 		alwaysRESP2 = false
+	}
+	if *enableTls {
+		opts.NetDialer = &tls.Dialer{
+			NetDialer: nil,
+			Config: &tls.Config{
+				ServerName: *host,
+			},
+		}
 	}
 
 	ips := make([]net.IP, 0)
