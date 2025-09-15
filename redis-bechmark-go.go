@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	tls "crypto/tls"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -185,6 +185,7 @@ func main() {
 	username := flag.String("u", "", "Username for Redis Auth.")
 	password := flag.String("a", "", "Password for Redis Auth.")
 	enableTls := flag.Bool("tls", false, "Use TLS connection.")
+	tlsSkipCertCheck := flag.Bool("tls-skip", false, "Ignore TLS certificate check")
 	jsonOutFile := flag.String("json-out-file", "", "Results file. If empty will not save.")
 	seed := flag.Int64("random-seed", 12345, "random seed to be used.")
 	clients := flag.Uint64("c", 50, "number of clients.")
@@ -292,11 +293,12 @@ func main() {
 		alwaysRESP2 = false
 	}
 	if *enableTls {
+		conf := &tls.Config{
+			InsecureSkipVerify: *tlsSkipCertCheck,
+		}
 		opts.NetDialer = &tls.Dialer{
 			NetDialer: nil,
-			Config: &tls.Config{
-				ServerName: *host,
-			},
+			Config:    conf,
 		}
 	}
 
