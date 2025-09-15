@@ -1,0 +1,94 @@
+name: Docker Publish - Latest
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: redis/redis-benchmark-go
+
+jobs:
+  docker-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch full history for Git info
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check Docker Hub credentials
+        run: |
+          if [[ -z "${{ secrets.DOCKER_USERNAME }}" || -z "${{ secrets.DOCKER_PASSWORD }}" ]]; then
+            echo "❌ Docker Hub credentials not configured!"
+            echo "Please set DOCKER_USERNAME and DOCKER_PASSWORD secrets in repository settings."
+            exit 1
+          fi
+          echo "✅ Docker Hub credentials are configured"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract Git metadata
+        id: meta
+        run: |
+          GIT_SHA=$(git rev-parse HEAD)
+          GIT_DIRTY=$(git diff --no-ext-diff 2>/dev/null | wc -l)
+          echo "git_sha=${GIT_SHA}" >> $GITHUB_OUTPUT
+          echo "git_dirty=${GIT_DIRTY}" >> $GITHUB_OUTPUT
+          echo "short_sha=${GIT_SHA:0:7}" >> $GITHUB_OUTPUT
+
+      - name: Extract metadata for Docker
+        id: docker_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+          build-args: |
+            GIT_SHA=${{ steps.meta.outputs.git_sha }}
+            GIT_DIRTY=${{ steps.meta.outputs.git_dirty }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generate summary
+        run: |
+          echo "## 🐳 Docker Image Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** \`${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.docker_meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Git SHA:** \`${{ steps.meta.outputs.git_sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Usage:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker run --rm ${{ env.IMAGE_NAME }}:latest run.py --help" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔗 [View on Docker Hub](https://hub.docker.com/r/redis/vector-db-benchmark)" >> $GITHUB_STEP_SUMMARY
