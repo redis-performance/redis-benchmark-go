@@ -184,6 +184,8 @@ func main() {
 	rpsburst := flag.Int64("rps-burst", 0, "Max rps burst. If 0 the allowed burst will be the ammount of clients.")
 	username := flag.String("u", "", "Username for Redis Auth.")
 	password := flag.String("a", "", "Password for Redis Auth.")
+	enableTls := flag.Bool("tls", false, "Use TLS connection.")
+	tlsSkipCertCheck := flag.Bool("tls-skip", false, "Ignore TLS certificate check")
 	jsonOutFile := flag.String("json-out-file", "", "Results file. If empty will not save.")
 	seed := flag.Int64("random-seed", 12345, "random seed to be used.")
 	clients := flag.Uint64("c", 50, "number of clients.")
@@ -214,8 +216,6 @@ func main() {
 	nameserver := flag.String("nameserver", "", "the IP address of the DNS name server. The IP address can be an IPv4 or an IPv6 address. If empty will use the default host namserver.")
 	flag.Var(&benchmarkCommands, "cmd", "Specify a query to send in quotes. Each command that you specify is run with its ratio. For example:-cmd=\"SET __key__ __value__\" -cmd-ratio=1")
 	flag.Var(&benchmarkCommandsRatios, "cmd-ratio", "The query ratio vs other queries used in the same benchmark. Each command that you specify is run with its ratio. For example: -cmd=\"SET __key__ __value__\" -cmd-ratio=0.8 -cmd=\"GET __key__\"  -cmd-ratio=0.2")
-	tlsEnabled := flag.Bool("tls", false, "Use TLS")
-	tlsSkipCertCheck := flag.Bool("tls-skip", false, "Ignore TLS certificate check")
 
 	flag.Parse()
 	totalQueries := len(benchmarkCommands)
@@ -292,7 +292,7 @@ func main() {
 		opts.Protocol = "3"
 		alwaysRESP2 = false
 	}
-	if *tlsEnabled {
+	if *enableTls {
 		conf := &tls.Config{
 			InsecureSkipVerify: *tlsSkipCertCheck,
 		}
