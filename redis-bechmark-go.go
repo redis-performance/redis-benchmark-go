@@ -177,6 +177,81 @@ func onInvalidations(messages []rueidis.RedisMessage) {
 
 }
 
+// parseCipherSuites parses a comma-separated list of cipher suite names and returns their IDs
+func parseCipherSuites(cipherList string) []uint16 {
+	if cipherList == "" {
+		return nil
+	}
+
+	// Map of cipher suite names to their IDs (TLS 1.3)
+	cipherSuiteMap := map[string]uint16{
+		"TLS_AES_128_GCM_SHA256":       tls.TLS_AES_128_GCM_SHA256,
+		"TLS_AES_256_GCM_SHA384":       tls.TLS_AES_256_GCM_SHA384,
+		"TLS_CHACHA20_POLY1305_SHA256": tls.TLS_CHACHA20_POLY1305_SHA256,
+	}
+
+	names := strings.Split(cipherList, ",")
+	var suites []uint16
+
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if id, ok := cipherSuiteMap[name]; ok {
+			suites = append(suites, id)
+		} else {
+			log.Printf("Warning: Unknown cipher suite: %s", name)
+		}
+	}
+
+	return suites
+}
+
+// parseCiphers parses a comma-separated list of cipher names and returns their IDs
+func parseCiphers(cipherList string) []uint16 {
+	if cipherList == "" {
+		return nil
+	}
+
+	// Map of cipher names to their IDs (TLS 1.2 and below)
+	cipherMap := map[string]uint16{
+		"TLS_RSA_WITH_RC4_128_SHA":                tls.TLS_RSA_WITH_RC4_128_SHA,
+		"TLS_RSA_WITH_3DES_EDE_CBC_SHA":           tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+		"TLS_RSA_WITH_AES_128_CBC_SHA":            tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+		"TLS_RSA_WITH_AES_256_CBC_SHA":            tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		"TLS_RSA_WITH_AES_128_CBC_SHA256":         tls.TLS_RSA_WITH_AES_128_CBC_SHA256,
+		"TLS_RSA_WITH_AES_128_GCM_SHA256":         tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+		"TLS_RSA_WITH_AES_256_GCM_SHA384":         tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+		"TLS_ECDHE_ECDSA_WITH_RC4_128_SHA":        tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
+		"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA":    tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+		"TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA":    tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+		"TLS_ECDHE_RSA_WITH_RC4_128_SHA":          tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA,
+		"TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA":     tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
+		"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA":      tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+		"TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA":      tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+		"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256": tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+		"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256":   tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+		"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256":   tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256": tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384":   tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		"TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384": tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		"TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305":    tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+		"TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305":  tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+	}
+
+	names := strings.Split(cipherList, ",")
+	var ciphers []uint16
+
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if id, ok := cipherMap[name]; ok {
+			ciphers = append(ciphers, id)
+		} else {
+			log.Printf("Warning: Unknown cipher: %s", name)
+		}
+	}
+
+	return ciphers
+}
+
 func main() {
 	host := flag.String("h", "127.0.0.1", "Server hostname.")
 	port := flag.Int("p", 12000, "Server port.")
@@ -184,8 +259,11 @@ func main() {
 	rpsburst := flag.Int64("rps-burst", 0, "Max rps burst. If 0 the allowed burst will be the ammount of clients.")
 	username := flag.String("u", "", "Username for Redis Auth.")
 	password := flag.String("a", "", "Password for Redis Auth.")
-	enableTls := flag.Bool("tls", false, "Use TLS connection.")
-	tlsSkipCertCheck := flag.Bool("tls-skip", false, "Ignore TLS certificate check")
+	enableTls := flag.Bool("tls", false, "Establish a secure TLS connection.")
+	// --insecure so that this is compatible with the redis-benchmark and redis-cli options
+	tlsSkipCertCheck := flag.Bool("insecure", false, "Allow insecure TLS connection by skipping cert validation.")
+	tlsCiphers := flag.String("tls-ciphers", "", "Sets the list of preferred ciphers (TLSv1.2 and below)")
+	tlsCiphersuites := flag.String("tls-ciphersuites", "", "Sets the list of preferred ciphersuites (TLSv1.3)")
 	jsonOutFile := flag.String("json-out-file", "", "Results file. If empty will not save.")
 	seed := flag.Int64("random-seed", 12345, "random seed to be used.")
 	clients := flag.Uint64("c", 50, "number of clients.")
@@ -296,6 +374,23 @@ func main() {
 		conf := &tls.Config{
 			InsecureSkipVerify: *tlsSkipCertCheck,
 		}
+
+		// Configure TLS 1.2 and below ciphers
+		if *tlsCiphers != "" {
+			conf.CipherSuites = parseCiphers(*tlsCiphers)
+			if *verbose {
+				fmt.Printf("Using TLS ciphers: %s\n", *tlsCiphers)
+			}
+		}
+
+		// Configure TLS 1.3 cipher suites
+		if *tlsCiphersuites != "" {
+			conf.CipherSuites = parseCipherSuites(*tlsCiphersuites)
+			if *verbose {
+				fmt.Printf("Using TLS cipher suites: %s\n", *tlsCiphersuites)
+			}
+		}
+
 		opts.NetDialer = &tls.Dialer{
 			NetDialer: nil,
 			Config:    conf,
@@ -369,6 +464,26 @@ func main() {
 				ForceSingleClient:   !*clusterMode,
 			}
 			clientOptions.Dialer.KeepAlive = *clientKeepAlive
+
+			// Configure TLS for rueidis client
+			if *enableTls {
+				tlsConfig := &tls.Config{
+					InsecureSkipVerify: *tlsSkipCertCheck,
+				}
+
+				// Configure TLS 1.2 and below ciphers
+				if *tlsCiphers != "" {
+					tlsConfig.CipherSuites = parseCiphers(*tlsCiphers)
+				}
+
+				// Configure TLS 1.3 cipher suites
+				if *tlsCiphersuites != "" {
+					tlsConfig.CipherSuites = parseCipherSuites(*tlsCiphersuites)
+				}
+
+				clientOptions.TLSConfig = tlsConfig
+			}
+
 			ruedisClient, err = rueidis.NewClient(clientOptions)
 			cacheOptions := rueidis.CacheOptions{UseMultiExec: *cscUseMultiExec, UseServerPTTL: *cscUseMultiExec, ClientTTL: *cscDuration}
 
