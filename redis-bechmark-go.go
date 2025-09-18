@@ -20,25 +20,73 @@ import (
 	"golang.org/x/time/rate"
 )
 
-func benchmarkRoutine(radixClient Client, ruedisClient rueidis.Client, useRuedis, useCSC, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS [][]string, commandsCDF []float32, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace []int, readOnly []bool, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs int, cacheOptions *rueidis.CacheOptions) {
+func benchmarkRoutine(radixClient Client, ruedisClient rueidis.Client, useRuedis, useCSC, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, cmdS [][]string, commandsCDF []float32, keyspacelen, datasize, number_samples uint64, loop bool, debug_level int, wg *sync.WaitGroup, keyplace, dataplace []int, readOnly []bool, useLimiter bool, rateLimiter *rate.Limiter, waitReplicas, waitReplicasMs, pipelineSize int, cacheOptions *rueidis.CacheOptions) {
 
 	defer wg.Done()
-	for i := 0; uint64(i) < number_samples || loop; i++ {
-		cmdPos := sample(commandsCDF)
-		kplace := keyplace[cmdPos]
-		dplace := dataplace[cmdPos]
-		isReadOnly := readOnly[cmdPos]
-		cmds := cmdS[cmdPos]
-		newCmdS, key := keyBuildLogic(kplace, dplace, datasize, keyspacelen, cmds, charset)
-		if useLimiter {
-			r := rateLimiter.ReserveN(time.Now(), int(1))
-			time.Sleep(r.Delay())
-		}
-		if useRuedis {
-			sendCmdLogicRuedis(ruedisClient, newCmdS, enableMultiExec, datapointsChan, continueOnError, debug_level, useCSC, isReadOnly, cacheOptions, waitReplicas, waitReplicasMs)
-		} else {
-			sendCmdLogicRadix(radixClient, newCmdS, enableMultiExec, key, datapointsChan, continueOnError, debug_level, waitReplicas, waitReplicasMs)
 
+	// Create per-goroutine random number generator to avoid lock contention
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	// Create per-goroutine data cache to avoid mutex contention
+	dataCache := make(map[int]string)
+
+	// Pipeline support for radix client only
+	if !useRuedis && pipelineSize > 1 {
+		// Pipeline mode for radix client
+		pipelineCommands := make([][]string, 0, pipelineSize)
+		pipelineKeys := make([]string, 0, pipelineSize)
+
+		for i := 0; uint64(i) < number_samples || loop; i++ {
+			cmdPos := sample(commandsCDF, rng)
+			kplace := keyplace[cmdPos]
+			dplace := dataplace[cmdPos]
+			cmds := cmdS[cmdPos]
+			newCmdS, key := keyBuildLogic(kplace, dplace, datasize, keyspacelen, cmds, charset, rng, dataCache)
+
+			// Collect commands for pipeline
+			pipelineCommands = append(pipelineCommands, newCmdS)
+			pipelineKeys = append(pipelineKeys, key)
+
+			// When we have enough commands or reached the end, send the pipeline
+			if len(pipelineCommands) == pipelineSize || (uint64(i+1) >= number_samples && !loop) {
+				if useLimiter {
+					r := rateLimiter.ReserveN(time.Now(), len(pipelineCommands))
+					time.Sleep(r.Delay())
+				}
+				sendCmdLogicRadixPipeline(radixClient, pipelineCommands, pipelineKeys, enableMultiExec, datapointsChan, continueOnError, debug_level, waitReplicas, waitReplicasMs)
+
+				// Reset pipeline
+				pipelineCommands = pipelineCommands[:0]
+				pipelineKeys = pipelineKeys[:0]
+			}
+		}
+
+		// Send any remaining commands in the pipeline
+		if len(pipelineCommands) > 0 {
+			if useLimiter {
+				r := rateLimiter.ReserveN(time.Now(), len(pipelineCommands))
+				time.Sleep(r.Delay())
+			}
+			sendCmdLogicRadixPipeline(radixClient, pipelineCommands, pipelineKeys, enableMultiExec, datapointsChan, continueOnError, debug_level, waitReplicas, waitReplicasMs)
+		}
+	} else {
+		// Original single command mode
+		for i := 0; uint64(i) < number_samples || loop; i++ {
+			cmdPos := sample(commandsCDF, rng)
+			kplace := keyplace[cmdPos]
+			dplace := dataplace[cmdPos]
+			isReadOnly := readOnly[cmdPos]
+			cmds := cmdS[cmdPos]
+			newCmdS, key := keyBuildLogic(kplace, dplace, datasize, keyspacelen, cmds, charset, rng, dataCache)
+			if useLimiter {
+				r := rateLimiter.ReserveN(time.Now(), int(1))
+				time.Sleep(r.Delay())
+			}
+			if useRuedis {
+				sendCmdLogicRuedis(ruedisClient, newCmdS, enableMultiExec, datapointsChan, continueOnError, debug_level, useCSC, isReadOnly, cacheOptions, waitReplicas, waitReplicasMs)
+			} else {
+				sendCmdLogicRadix(radixClient, newCmdS, enableMultiExec, key, datapointsChan, continueOnError, debug_level, waitReplicas, waitReplicasMs)
+			}
 		}
 	}
 }
@@ -164,6 +212,61 @@ func sendCmdLogicRadix(conn Client, newCmdS []string, enableMultiExec bool, key 
 	}
 	duration := endT.Sub(startT)
 	datapointsChan <- datapoint{!(err != nil), duration.Microseconds(), cacheHit}
+}
+
+func sendCmdLogicRadixPipeline(conn Client, cmdsList [][]string, keys []string, enableMultiExec bool, datapointsChan chan datapoint, continueOnError bool, debug_level int, waitReplicas, waitReplicasMs int) {
+	ctx := context.Background()
+	cacheHit := false
+	var err error
+	startT := time.Now()
+
+	if enableMultiExec {
+		// For MULTI/EXEC, we need to handle each command individually
+		// This is not ideal for pipelining, but maintains compatibility
+		for i, newCmdS := range cmdsList {
+			key := keys[i]
+			sendCmdLogicRadix(conn, newCmdS, enableMultiExec, key, datapointsChan, continueOnError, debug_level, waitReplicas, waitReplicasMs)
+		}
+		return
+	}
+
+	// Create pipeline
+	p := radix.NewPipeline()
+
+	// Add all commands to pipeline
+	for _, newCmdS := range cmdsList {
+		cmd := radix.Cmd(nil, newCmdS[0], newCmdS[1:]...)
+		p.Append(cmd)
+	}
+
+	// Add WAIT commands if needed
+	if waitReplicas > 0 {
+		for range cmdsList {
+			p.Append(radix.Cmd(nil, "WAIT", fmt.Sprintf("%d", waitReplicas), fmt.Sprintf("%d", waitReplicasMs)))
+		}
+	}
+
+	// Execute pipeline
+	err = conn.Do(ctx, p)
+	endT := time.Now()
+
+	if err != nil {
+		if continueOnError {
+			if debug_level > 0 {
+				log.Println(fmt.Sprintf("Received an error with the following pipeline commands: %v, error: %v", cmdsList, err))
+			}
+		} else {
+			log.Fatalf("Received an error with the following pipeline commands: %v, error: %v", cmdsList, err)
+		}
+	}
+
+	// Calculate duration and send datapoints for each command in the pipeline
+	duration := endT.Sub(startT)
+	//avgDurationPerCmd := duration.Microseconds() / int64(len(cmdsList))
+
+	for range cmdsList {
+		datapointsChan <- datapoint{!(err != nil), duration.Microseconds(), cacheHit}
+	}
 }
 
 func onInvalidations(messages []rueidis.RedisMessage) {
@@ -292,6 +395,7 @@ func main() {
 	continueonerror := flag.Bool("continue-on-error", false, "Output verbose info")
 	resp := flag.String("resp", "", "redis command response protocol (2 - RESP 2, 3 - RESP 3). If empty will not enforce it.")
 	nameserver := flag.String("nameserver", "", "the IP address of the DNS name server. The IP address can be an IPv4 or an IPv6 address. If empty will use the default host namserver.")
+	pipelineSize := flag.Int("P", 1, "Pipeline <numreq> requests. Default 1 (no pipeline).")
 	flag.Var(&benchmarkCommands, "cmd", "Specify a query to send in quotes. Each command that you specify is run with its ratio. For example:-cmd=\"SET __key__ __value__\" -cmd-ratio=1")
 	flag.Var(&benchmarkCommandsRatios, "cmd-ratio", "The query ratio vs other queries used in the same benchmark. Each command that you specify is run with its ratio. For example: -cmd=\"SET __key__ __value__\" -cmd-ratio=0.8 -cmd=\"GET __key__\"  -cmd-ratio=0.2")
 
@@ -429,14 +533,19 @@ func main() {
 	}
 	fmt.Printf("Using random seed: %d\n", *seed)
 	rand.Seed(*seed)
+	mainRng := rand.New(rand.NewSource(*seed))
 	var cluster *radix.Cluster
 	var radixStandalone radix.Client
 	var ruedisClient rueidis.Client
 	var err error = nil
 	datapointsChan := make(chan datapoint, *numberRequests)
+
+	// For radix client with pipelining, create shared connection pools
+	var sharedRadixPools = make(map[string]radix.Client)
+
 	for clientId := 1; uint64(clientId) <= *clients; clientId++ {
 		wg.Add(1)
-		connectionStr := fmt.Sprintf("%s:%d", ips[rand.Int63n(int64(len(ips)))], *port)
+		connectionStr := fmt.Sprintf("%s:%d", ips[mainRng.Int63n(int64(len(ips)))], *port)
 		if *verbose {
 			fmt.Printf("Using connection string %s for client %d\n", connectionStr, clientId)
 		}
@@ -490,15 +599,21 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			go benchmarkRoutine(radixStandalone, ruedisClient, *useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, &cacheOptions)
+			go benchmarkRoutine(radixStandalone, ruedisClient, *useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, *pipelineSize, &cacheOptions)
 		} else {
-			// legacy radix code
+			// legacy radix code with shared connection pools for better pipeline performance
 			if *clusterMode {
 				cluster = getOSSClusterConn(connectionStr, opts, 1)
-				go benchmarkRoutine(cluster, ruedisClient, *useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, nil)
+				go benchmarkRoutine(cluster, ruedisClient, *useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, *pipelineSize, nil)
 			} else {
-				radixStandalone = getStandaloneConn(connectionStr, opts, 1)
-				go benchmarkRoutine(radixStandalone, ruedisClient, *useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, nil)
+				// Use shared connection pool for better pipeline performance
+				if sharedRadixPools[connectionStr] == nil {
+					// Calculate optimal pool size based on pipeline size and clients
+					poolSize := int(*clients)
+					sharedRadixPools[connectionStr] = getStandaloneConn(connectionStr, opts, uint64(poolSize))
+				}
+				radixStandalone = sharedRadixPools[connectionStr]
+				go benchmarkRoutine(radixStandalone, ruedisClient, *useRuedis, *cscEnabled, *multi, datapointsChan, *continueonerror, cmds, cdf, *keyspacelen, *datasize, samplesPerClient, *loop, int(*debug), &wg, cmdKeyplaceHolderPos, cmdDataplaceHolderPos, cmdReadOnly, useRateLimiter, rateLimiter, *waitReplicas, *waitReplicasMs, *pipelineSize, nil)
 			}
 		}
 

@@ -3,13 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
-	"github.com/redis/rueidis"
+	"math/rand"
 	"os"
 	"os/exec"
 	"reflect"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/redis/rueidis"
 )
 
 func getTestConnectionDetails() (string, string) {
@@ -80,7 +82,9 @@ func Test_keyBuildLogic(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotNewCmdS, gotKey := keyBuildLogic(tt.args.keyPos, tt.args.dataPos, tt.args.datasize, tt.args.keyspacelen, tt.args.cmdS, tt.args.charset)
+			rng := rand.New(rand.NewSource(12345)) // Use fixed seed for deterministic tests
+			dataCache := make(map[int]string)      // Per-test cache
+			gotNewCmdS, gotKey := keyBuildLogic(tt.args.keyPos, tt.args.dataPos, tt.args.datasize, tt.args.keyspacelen, tt.args.cmdS, tt.args.charset, rng, dataCache)
 			if !reflect.DeepEqual(gotNewCmdS, tt.wantNewCmdS) {
 				t.Errorf("keyBuildLogic() gotNewCmdS = %v, want %v", gotNewCmdS, tt.wantNewCmdS)
 			}
