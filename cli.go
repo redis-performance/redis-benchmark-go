@@ -1,11 +1,12 @@
 package main
 
 import (
-	shellwords "github.com/mattn/go-shellwords"
 	"log"
 	"math"
 	"math/rand"
 	"strconv"
+
+	shellwords "github.com/mattn/go-shellwords"
 )
 
 type arrayStringParameters []string
@@ -19,8 +20,8 @@ func (i *arrayStringParameters) Set(value string) error {
 	return nil
 }
 
-func sample(cdf []float32) int {
-	r := rand.Float32()
+func sample(cdf []float32, rng *rand.Rand) int {
+	r := rng.Float32()
 	bucket := 0
 	for r > cdf[bucket] {
 		bucket++
