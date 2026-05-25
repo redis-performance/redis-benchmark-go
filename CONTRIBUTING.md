@@ -16,7 +16,7 @@ go mod download
 make build
 ```
 
-Go 1.20 or later is required (the project is tested against 1.20.x and 1.21.x in CI).
+Go 1.21 or later is required (per `go.mod`). CI runs the test matrix against 1.20.x and 1.21.x.
 
 ## Branch naming
 
