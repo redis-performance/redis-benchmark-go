@@ -9,8 +9,8 @@ We treat this repo as "Open Source" within Redis: anyone who clears the bar belo
 git clone git@github.com:redis-performance/redis-benchmark-go.git
 cd redis-benchmark-go
 
-# Fetch dependencies
-GO111MODULE=on go get -t -v ./...
+# Download module dependencies
+go mod download
 
 # Build the binary
 make build
@@ -26,7 +26,7 @@ Go 1.20 or later is required (the project is tested against 1.20.x and 1.21.x in
 
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
 
-Example: `feat/add-pipeline-mode`
+Example: `feat/add-rps-limit`
 
 ## Coding standards
 
@@ -47,7 +47,7 @@ Example: `feat/add-pipeline-mode`
 - All new behaviour must be covered by tests.
 - Existing tests must pass: run the test suite locally before opening a PR.
 - Coverage should not decrease.
-- The test suite requires a Redis instance on `localhost:6379` (override with the `REDIS_TEST_HOST` env var).
+- The test suite requires a Redis instance on `localhost:6379`. Override with `REDIS_TEST_HOST=host:port`; use `REDIS_TEST_PASSWORD` if authentication is needed.
 
 ```bash
 # Run the full test suite (fetches deps, builds a coverage-instrumented binary, runs tests, reports coverage)
