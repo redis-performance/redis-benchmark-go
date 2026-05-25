@@ -13,8 +13,8 @@ Instructions for AI coding agents (Claude Code, Copilot, Cursor, etc.) working i
 git clone git@github.com:redis-performance/redis-benchmark-go.git
 cd redis-benchmark-go
 
-# Fetch dependencies
-GO111MODULE=on go get -t -v ./...
+# Download module dependencies
+go mod download
 
 # Build the binary
 make build
