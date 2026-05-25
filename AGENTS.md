@@ -20,7 +20,7 @@ go mod download
 make build
 ```
 
-Go 1.20 or later is required. The binary will be placed in the repository root as `redis-benchmark-go`.
+Go 1.21 or later is required (per `go.mod`). The binary will be placed in the repository root as `redis-benchmark-go`.
 
 ## Branch naming
 
