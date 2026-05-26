@@ -28,12 +28,12 @@ jobs:
 
     steps:
       - name: Set up ${{ matrix.go-version }}
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go-version }}
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Test
         run: make test
@@ -42,4 +42,3 @@ jobs:
         uses: codecov/codecov-action@v4-beta
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_ORG_TOKEN }}
-
