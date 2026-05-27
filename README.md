@@ -1,6 +1,8 @@
 # redis-benchmark-go
 
 [![codecov](https://codecov.io/gh/redis-performance/redis-benchmark-go/graph/badge.svg?token=5B3WJTDAWP)](https://codecov.io/gh/redis-performance/redis-benchmark-go)
+[![Docker Pulls](https://img.shields.io/docker/pulls/redis/redis-benchmark-go)](https://hub.docker.com/r/redis/redis-benchmark-go)
+[![CI](https://github.com/redis-performance/redis-benchmark-go/actions/workflows/build.yml/badge.svg)](https://github.com/redis-performance/redis-benchmark-go/actions/workflows/build.yml)
 
 ## Overview
 
