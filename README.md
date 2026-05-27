@@ -72,6 +72,17 @@ cd $GOPATH/src/github.com/redis-performance/redis-benchmark-go
 make
 ```
 
+## Docker
+
+Pre-built Docker images are available on Docker Hub:
+
+```bash
+docker pull redis/redis-benchmark-go:latest
+docker run --rm redis/redis-benchmark-go --help
+```
+
+Images are built for `linux/amd64` and `linux/arm64`.
+
 ## Usage of redis-benchmark-go
 
 ```
