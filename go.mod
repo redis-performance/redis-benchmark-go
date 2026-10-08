@@ -1,9 +1,9 @@
 module github.com/filipecosta90/redis-benchmark-go
 
-go 1.21
+go 1.23.0
 
 require (
-	github.com/HdrHistogram/hdrhistogram-go v1.1.0
+	github.com/HdrHistogram/hdrhistogram-go v1.4.0
 	github.com/mattn/go-shellwords v1.0.12
 	github.com/mediocregopher/radix/v4 v4.1.2
 	github.com/redis/rueidis v1.0.19
