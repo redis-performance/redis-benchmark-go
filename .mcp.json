@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cpu-perf": {
+      "command": "uvx",
+      "args": ["cpu-perf==0.1.1"]
+    }
+  }
+}
